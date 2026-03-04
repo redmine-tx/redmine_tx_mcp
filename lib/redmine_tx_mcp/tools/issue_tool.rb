@@ -149,11 +149,14 @@ module RedmineTxMcp
         end
 
         def call_tool(tool_name, arguments)
+          # Layer 2: Extract chatbot context flag (injected by ClaudeChatbot)
+          chatbot = !!arguments.delete('_chatbot_context')
+
           case tool_name
           when "issue_list"
-            list_issues(arguments)
+            list_issues(arguments, chatbot: chatbot)
           when "issue_get"
-            get_issue(arguments)
+            get_issue(arguments, chatbot: chatbot)
           when "issue_create"
             create_issue(arguments)
           when "issue_update"
@@ -161,9 +164,9 @@ module RedmineTxMcp
           when "issue_delete"
             delete_issue(arguments)
           when "issue_children_summary"
-            children_summary(arguments)
+            children_summary(arguments, chatbot: chatbot)
           when "version_overview"
-            version_overview(arguments)
+            version_overview(arguments, chatbot: chatbot)
           when "bug_statistics"
             bug_statistics(arguments)
           else
@@ -177,7 +180,7 @@ module RedmineTxMcp
 
         # ─── List ───────────────────────────────────────────
 
-        def list_issues(args)
+        def list_issues(args, chatbot: false)
           scope = Issue.visible
 
           # Basic filters
@@ -236,15 +239,16 @@ module RedmineTxMcp
           # Sorting
           scope = apply_sort(scope, args['sort'])
 
-          # Pagination
+          # Pagination — chatbot defaults to 10 per page to reduce token usage
           page = [args['page'].to_i, 1].max
-          per_page = [[args['per_page'].to_i, 1].max, 100].min
+          default_per_page = chatbot ? 10 : 25
+          per_page = args['per_page'].to_i > 0 ? [[args['per_page'].to_i, 1].max, 100].min : default_per_page
           total = scope.count
           offset = (page - 1) * per_page
           items = scope.offset(offset).limit(per_page).to_a
 
           {
-            items: items.map { |issue| format_issue_details(issue) },
+            items: items.map { |issue| format_issue_details(issue, chatbot: chatbot) },
             pagination: {
               page: page,
               per_page: per_page,
@@ -256,9 +260,9 @@ module RedmineTxMcp
 
         # ─── Get ────────────────────────────────────────────
 
-        def get_issue(args)
+        def get_issue(args, chatbot: false)
           issue = Issue.visible.find(args['id'])
-          result = format_issue_details(issue)
+          result = format_issue_details(issue, chatbot: chatbot)
 
           if args['include_journals']
             result[:journals] = issue.journals.includes(:user, :details).order(:created_on).map do |journal|
@@ -354,7 +358,7 @@ module RedmineTxMcp
 
         # ─── Children Summary ───────────────────────────────
 
-        def children_summary(args)
+        def children_summary(args, chatbot: false)
           parent = Issue.visible.find(args['parent_id'])
           children = parent.children.visible.includes(:status, :tracker, :assigned_to, :priority).to_a
 
@@ -395,7 +399,7 @@ module RedmineTxMcp
           summary[:by_type] = build_type_breakdown(children) if Tracker.respond_to?(:is_bug?)
 
           {
-            parent: format_issue_details(parent),
+            parent: format_issue_details(parent, chatbot: chatbot),
             summary: summary,
             children_by_stage: grouped,
             alerts: alerts
@@ -406,7 +410,7 @@ module RedmineTxMcp
 
         # ─── Version Overview ───────────────────────────────
 
-        def version_overview(args)
+        def version_overview(args, chatbot: false)
           version = Version.find(args['version_id'])
           all_issues = version.fixed_issues.visible.includes(:status, :tracker, :assigned_to, :priority, :children).to_a
 
@@ -456,7 +460,16 @@ module RedmineTxMcp
           # Include standalone issues in stage counts
           standalone_issues.each { |i| stage_counts[get_stage_name(i)] += 1 }
 
-          {
+          sorted_summaries = parent_summaries.sort_by { |p| [p[:children_overdue] > 0 ? 0 : 1, -(p[:children_total] - p[:children_completed])] }
+
+          # Chatbot mode: limit parent issues to reduce token usage
+          truncated_notice = nil
+          if chatbot && sorted_summaries.size > 30
+            truncated_notice = "Showing 30 of #{sorted_summaries.size} parent issues (sorted by priority). Use issue_children_summary for details on specific parents."
+            sorted_summaries = sorted_summaries.first(30)
+          end
+
+          result = {
             version: {
               id: version.id,
               name: version.name,
@@ -466,11 +479,13 @@ module RedmineTxMcp
               overdue: version.overdue?,
               total_issues: all_issues.size
             },
-            parent_issues: parent_summaries.sort_by { |p| [p[:children_overdue] > 0 ? 0 : 1, -(p[:children_total] - p[:children_completed])] },
+            parent_issues: sorted_summaries,
             standalone_issues_count: standalone_issues.size,
             stage_summary: stage_counts,
             alerts: alerts
           }
+          result[:notice] = truncated_notice if truncated_notice
+          result
         rescue ActiveRecord::RecordNotFound
           { error: "Version not found" }
         end
@@ -696,7 +711,34 @@ module RedmineTxMcp
           }.merge(issue_tip_fields(child))
         end
 
-        def format_issue_details(issue)
+        # chatbot: true omits verbose fields (description, author, category, parent_issue,
+        # project, timestamps) to reduce token usage. MCP protocol callers get full details.
+        def format_issue_details(issue, chatbot: false)
+          if chatbot
+            result = {
+              id: issue.id,
+              subject: issue.subject,
+              tracker: issue.tracker.name,
+              status: {
+                id: issue.status.id,
+                name: issue.status.name,
+                is_closed: issue.status.is_closed?,
+                stage: issue.status.respond_to?(:stage) ? issue.status.stage : nil,
+                stage_name: issue.status.respond_to?(:stage_name) ? issue.status.stage_name : nil,
+              },
+              priority: issue.priority ? issue.priority.name : nil,
+              assigned_to: issue.assigned_to ? issue.assigned_to.name : nil,
+              fixed_version: issue.fixed_version ? issue.fixed_version.name : nil,
+              start_date: issue.start_date&.iso8601,
+              due_date: issue.due_date&.iso8601,
+              estimated_hours: issue.estimated_hours,
+              spent_hours: issue.spent_hours,
+              done_ratio: issue.done_ratio,
+              worker: issue.respond_to?(:worker) && issue.worker ? issue.worker.name : nil,
+            }.merge(issue_tip_fields(issue))
+            return result
+          end
+
           {
             id: issue.id,
             subject: issue.subject,

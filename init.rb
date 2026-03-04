@@ -12,6 +12,7 @@ require "redmine_tx_mcp/tools/user_tool"
 require "redmine_tx_mcp/tools/version_tool"
 require "redmine_tx_mcp/tools/enumeration_tool"
 require "redmine_tx_mcp/anthropic_models_service"
+require "redmine_tx_mcp/chatbot_logger"
 
 Redmine::Plugin.register :redmine_tx_mcp do
   name "Redmine TX MCP Plugin"
@@ -64,31 +65,6 @@ Users often refer to issues/versions/projects by title, not ID (e.g. "은하계 
 ### Before creating/updating
 - Look up valid IDs: `enum_trackers`, `enum_statuses`, `enum_priorities`, `enum_categories`
 - Required for issue_create: project_id, tracker_id, subject
-
-## Available Tools
-
-### Issue Management (issue_*)
-- **issue_list**: Rich filtering (stage, is_open, is_overdue, date ranges, sort). Returns individual issue records.
-- **issue_get**: Full details with optional journals and children
-- **issue_create / issue_update / issue_delete**: CRUD operations
-- **issue_children_summary**: Parent issue + all children summary with stage breakdown and alerts
-- **version_overview**: Version + all parent issues summarized with alerts
-- **bug_statistics**: Aggregated bug dashboard (optionally filtered by version_id, configurable days for trend). Returns: summary (total/resolved/unresolved/resolution_rate_percent), daily trend, unresolved by category, unresolved by assignee ranked by count. Read-only — use `issue_list` for individual bug records.
-
-### Projects (project_*)
-- project_list, project_get, project_create, project_update, project_delete
-- project_members, project_add_member, project_remove_member
-
-### Users (user_*)
-- user_list, user_get, user_create, user_update, user_delete
-- user_projects, user_groups, user_roles
-
-### Versions (version_*)
-- version_list, version_get, version_create, version_update, version_delete
-- version_statistics: Detailed issue counts by status/tracker
-
-### Enumerations (enum_*)
-- enum_statuses, enum_trackers, enum_priorities, enum_categories, enum_roles
 
 ## Data Model Reference
 
