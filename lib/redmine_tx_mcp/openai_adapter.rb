@@ -126,7 +126,10 @@ module RedmineTxMcp
         body = {
           model: anthropic_req[:model] || anthropic_req['model'],
           messages: messages,
-          max_tokens: anthropic_req[:max_tokens] || anthropic_req['max_tokens'] || 4000
+          max_tokens: anthropic_req[:max_tokens] || anthropic_req['max_tokens'] || 4000,
+          # Disable thinking/reasoning mode for models like Qwen 3.5
+          # This tells Ollama to use the non-thinking chat template
+          chat_template: 'default'
         }
         body[:tools] = tools if tools.present?
         body
@@ -141,9 +144,10 @@ module RedmineTxMcp
         message = choice['message'] || {}
         content_blocks = []
 
-        # Text content
-        if message['content'].present?
-          content_blocks << { 'type' => 'text', 'text' => message['content'] }
+        # Text content (fall back to reasoning field for thinking models like Qwen 3.5)
+        text = message['content'].presence || message['reasoning'].presence
+        if text.present?
+          content_blocks << { 'type' => 'text', 'text' => text }
         end
 
         # Tool calls

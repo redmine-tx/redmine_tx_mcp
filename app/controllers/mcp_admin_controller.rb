@@ -36,13 +36,14 @@ class McpAdminController < ApplicationController
     force_refresh = params[:refresh] == '1'
 
     if provider == 'openai'
-      endpoint_url = settings['openai_endpoint_url']
+      # Prefer endpoint_url from query param (form value) over saved setting
+      endpoint_url = params[:endpoint_url].presence || settings['openai_endpoint_url']
       unless endpoint_url.present?
         render json: { success: false, models: [], error: 'OpenAI endpoint URL not configured' }
         return
       end
 
-      api_key = settings['openai_api_key'].presence
+      api_key = params[:api_key].presence || settings['openai_api_key'].presence
       models = RedmineTxMcp::OpenaiModelsService.fetch_models(
         endpoint_url: endpoint_url, api_key: api_key, force_refresh: force_refresh
       )

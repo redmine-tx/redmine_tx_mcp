@@ -70,17 +70,18 @@
     <p>
       <%= label_tag 'settings_openai_model', 'Model' %>
       <span id="openai-model-wrapper" style="display: inline-flex; align-items: center; gap: 6px;">
-        <%= select_tag 'settings[openai_model]',
-              options_for_select(
-                (@settings['openai_model'].present? ? [[@settings['openai_model'], @settings['openai_model']]] : [['(select a model)', '']]),
-                @settings['openai_model'] || ''
-              ),
-              id: 'settings_openai_model' %>
+        <%= text_field_tag 'settings[openai_model]', @settings['openai_model'],
+              id: 'settings_openai_model',
+              list: 'openai-model-datalist',
+              placeholder: 'e.g. qwen3.5',
+              autocomplete: 'off',
+              style: 'width: 250px;' %>
+        <datalist id="openai-model-datalist"></datalist>
         <button type="button" id="openai-model-refresh" title="Refresh model list from endpoint"
                 style="cursor: pointer; padding: 2px 6px; font-size: 14px; line-height: 1; border: 1px solid #ccc; border-radius: 3px; background: #f5f5f5;">&#x21bb;</button>
         <span id="openai-model-loading" style="display: none; font-size: 12px; color: #888;">Loading models...</span>
       </span>
-      <em>Select a model from the endpoint. Click refresh after setting the endpoint URL.</em>
+      <em>Type a model name directly, or click refresh to load available models from the endpoint.</em>
     </p>
   </div>
 
@@ -162,16 +163,64 @@
     loadModels(claudeSelect, claudeLoading, claudeRefreshBtn, 'anthropic', false);
 
     // ─── OpenAI model loader ───
-    var openaiSelect = document.getElementById('settings_openai_model');
+    var openaiModelInput = document.getElementById('settings_openai_model');
+    var openaiDatalist = document.getElementById('openai-model-datalist');
     var openaiRefreshBtn = document.getElementById('openai-model-refresh');
     var openaiLoading = document.getElementById('openai-model-loading');
 
-    openaiRefreshBtn.addEventListener('click', function() {
-      loadModels(openaiSelect, openaiLoading, openaiRefreshBtn, 'openai', true);
-    });
-    // Auto-load if provider is openai
+    function loadOpenaiModels(refresh) {
+      var endpointUrl = document.getElementById('settings_openai_endpoint_url').value;
+      var apiKey = document.getElementById('settings_openai_api_key').value;
+
+      if (!endpointUrl) {
+        openaiLoading.style.display = 'none';
+        return;
+      }
+
+      var url = '<%= escape_javascript(url_for(controller: "mcp_admin", action: "models", only_path: true)) %>';
+      url += '?provider=openai&endpoint_url=' + encodeURIComponent(endpointUrl);
+      if (apiKey) url += '&api_key=' + encodeURIComponent(apiKey);
+      if (refresh) url += '&refresh=1';
+
+      openaiLoading.style.display = 'inline';
+      openaiRefreshBtn.disabled = true;
+
+      var xhr = new XMLHttpRequest();
+      xhr.open('GET', url, true);
+      xhr.setRequestHeader('Accept', 'application/json');
+      xhr.setRequestHeader('X-Requested-With', 'XMLHttpRequest');
+      xhr.onreadystatechange = function() {
+        if (xhr.readyState !== 4) return;
+
+        openaiLoading.style.display = 'none';
+        openaiRefreshBtn.disabled = false;
+
+        if (xhr.status !== 200) return;
+
+        try {
+          var data = JSON.parse(xhr.responseText);
+          if (!data.models || data.models.length === 0) return;
+
+          openaiDatalist.innerHTML = '';
+          for (var i = 0; i < data.models.length; i++) {
+            var opt = document.createElement('option');
+            opt.value = data.models[i].id;
+            openaiDatalist.appendChild(opt);
+          }
+
+          // If input is empty, auto-fill with first model
+          if (!openaiModelInput.value && data.models.length > 0) {
+            openaiModelInput.value = data.models[0].id;
+          }
+        } catch(e) {}
+      };
+      xhr.send();
+    }
+
+    openaiRefreshBtn.addEventListener('click', function() { loadOpenaiModels(true); });
+    // Auto-load if provider is openai and endpoint is set
     if (providerSelect.value === 'openai') {
-      loadModels(openaiSelect, openaiLoading, openaiRefreshBtn, 'openai', false);
+      loadOpenaiModels(false);
     }
   })();
   </script>
