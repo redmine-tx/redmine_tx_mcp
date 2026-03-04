@@ -1,10 +1,10 @@
 class ChatbotController < ApplicationController
   before_action :require_login
-  before_action :find_project, except: [:global_chat, :global_chat_submit]
-  skip_before_action :verify_authenticity_token, only: [:chat_submit, :global_chat_submit]
+  before_action :find_project
+  skip_before_action :verify_authenticity_token, only: [:chat_submit]
 
   def index
-    @chatbot_session_id = session[:chatbot_session_id] ||= SecureRandom.hex(8)
+    @chatbot_session_id = session[session_key] ||= SecureRandom.hex(8)
     @conversation_history = get_conversation_history(@chatbot_session_id)
   end
 
@@ -12,20 +12,29 @@ class ChatbotController < ApplicationController
     message = params[:message]
 
     if message.blank?
-      render json: { error: "Message cannot be empty" }, status: 400
+      if wants_streaming?
+        self.response.headers['Content-Type'] = 'text/event-stream'
+        self.response.headers['Cache-Control'] = 'no-cache'
+        self.response_body = ["data: #{({ type: 'error', message: 'Message cannot be empty' }).to_json}\n\n",
+                              "data: #{({ type: 'done' }).to_json}\n\n"]
+      else
+        render json: { error: "Message cannot be empty" }, status: 400
+      end
+      return
+    end
+
+    if wants_streaming?
+      stream_chat_response(message)
       return
     end
 
     begin
-      # Initialize chatbot
       chatbot = get_or_create_chatbot
 
-      # Send message to Claude
       response = chatbot.chat(message, user: User.current)
 
       if response[:success]
-        # Store conversation in cache
-        session_id = session[:chatbot_session_id]
+        session_id = session[session_key]
         store_conversation_message(session_id, 'user', message)
         store_conversation_message(session_id, 'assistant', response[:message])
 
@@ -51,81 +60,26 @@ class ChatbotController < ApplicationController
   end
 
   def reset
-    session_id = session[:chatbot_session_id]
+    session_id = session[session_key]
     clear_conversation_history(session_id) if session_id
-    session[:chatbot_instance] = nil
+    session[session_key] = nil
 
     render json: { success: true, message: "Conversation reset" }
   end
 
-  def global_chat
-    @chatbot_session_id = session[:global_chatbot_session_id] ||= SecureRandom.hex(8)
-    @conversation_history = get_conversation_history(@chatbot_session_id)
-  end
-
-  def global_chat_submit
-    message = params[:message]
-
-    if message.blank?
-      if wants_streaming?
-        self.response.headers['Content-Type'] = 'text/event-stream'
-        self.response.headers['Cache-Control'] = 'no-cache'
-        self.response_body = ["data: #{({ type: 'error', message: 'Message cannot be empty' }).to_json}\n\n",
-                              "data: #{({ type: 'done' }).to_json}\n\n"]
-      else
-        render json: { error: "Message cannot be empty" }, status: 400
-      end
-      return
-    end
-
-    if wants_streaming?
-      stream_chat_response(message)
-      return
-    end
-
-    begin
-      # Initialize global chatbot
-      chatbot = get_or_create_global_chatbot
-
-      # Send message to Claude
-      response = chatbot.chat(message, user: User.current)
-
-      if response[:success]
-        # Store conversation in cache
-        session_id = session[:global_chatbot_session_id]
-        store_conversation_message(session_id, 'user', message)
-        store_conversation_message(session_id, 'assistant', response[:message])
-
-        render json: {
-          success: true,
-          message: response[:message],
-          conversation_id: response[:conversation_id]
-        }
-      else
-        render json: {
-          success: false,
-          error: response[:error]
-        }, status: 500
-      end
-
-    rescue => e
-      Rails.logger.error "Global Chatbot Error: #{e.message}"
-      render json: {
-        success: false,
-        error: "Sorry, I encountered an error. Please try again."
-      }, status: 500
-    end
-  end
-
   private
+
+  def session_key
+    :"chatbot_session_#{@project.id}"
+  end
 
   def wants_streaming?
     request.headers['Accept']&.include?('text/event-stream')
   end
 
   def stream_chat_response(message)
-    session_id = session[:global_chatbot_session_id]
-    chatbot = get_or_create_global_chatbot
+    session_id = session[session_key]
+    chatbot = get_or_create_chatbot
     current_user = User.current
 
     self.response.headers['Content-Type'] = 'text/event-stream'
@@ -154,27 +108,14 @@ class ChatbotController < ApplicationController
   end
 
   def find_project
-    @project = Project.find(params[:project_id]) if params[:project_id]
+    @project = Project.find(params[:project_id])
   rescue ActiveRecord::RecordNotFound
     render_404
   end
 
   def get_or_create_chatbot
-    session[:chatbot_instance] ||= create_new_chatbot
-
-    # Restore conversation history
     chatbot = create_new_chatbot
-    session_id = session[:chatbot_session_id]
-    restore_conversation_to_chatbot(chatbot, session_id)
-    chatbot
-  end
-
-  def get_or_create_global_chatbot
-    session[:global_chatbot_instance] ||= create_new_chatbot
-
-    # Restore conversation history
-    chatbot = create_new_chatbot
-    session_id = session[:global_chatbot_session_id]
+    session_id = session[session_key]
     restore_conversation_to_chatbot(chatbot, session_id)
     chatbot
   end
@@ -188,7 +129,7 @@ class ChatbotController < ApplicationController
       raise "Claude API key not configured. Please set it in MCP settings or ANTHROPIC_API_KEY environment variable."
     end
 
-    RedmineTxMcp::ClaudeChatbot.new(api_key: api_key, model: model)
+    RedmineTxMcp::ClaudeChatbot.new(api_key: api_key, model: model, project_id: @project.id)
   end
 
   def get_conversation_history(session_id)
@@ -207,7 +148,7 @@ class ChatbotController < ApplicationController
       'timestamp' => Time.current.strftime("%H:%M")
     }
 
-    # Keep only last 20 messages (increased from 6 since we're not limited by cookies)
+    # Keep only last 20 messages
     history = history.last(20)
 
     cache_ttl = get_cache_ttl

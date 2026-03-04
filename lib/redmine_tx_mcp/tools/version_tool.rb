@@ -11,6 +11,7 @@ module RedmineTxMcp
                 type: "object",
                 properties: {
                   project_id: { type: "integer", description: "Project ID (required)" },
+                  name: { type: "string", description: "Filter by name (partial match, e.g. '0318' finds 'Sprint 0318')" },
                   status: { type: "string", description: "Filter by status", enum: ["open", "locked", "closed"] },
                   sharing: { type: "string", description: "Filter by sharing scope", enum: ["none", "descendants", "hierarchy", "tree", "system"] },
                   include_subprojects: { type: "boolean", description: "Include versions from subprojects", default: false },
@@ -119,12 +120,14 @@ module RedmineTxMcp
           versions = project.versions.visible
           versions = versions.where(status: args['status']) if args['status']
           versions = versions.where(sharing: args['sharing']) if args['sharing']
+          versions = versions.where("#{Version.table_name}.name LIKE ?", "%#{args['name']}%") if args['name'].present?
 
           if args['include_subprojects']
             subproject_ids = project.descendants.active.pluck(:id)
             versions = Version.visible.where(project_id: [project.id] + subproject_ids)
             versions = versions.where(status: args['status']) if args['status']
             versions = versions.where(sharing: args['sharing']) if args['sharing']
+            versions = versions.where("#{Version.table_name}.name LIKE ?", "%#{args['name']}%") if args['name'].present?
           end
 
           page = [args['page'].to_i, 1].max

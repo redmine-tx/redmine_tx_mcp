@@ -36,9 +36,10 @@ module RedmineTxMcp
 
     BASE_TOOLS = %w[issue_list issue_get].freeze
 
-    def initialize(api_key: nil, model: nil)
+    def initialize(api_key: nil, model: nil, project_id: nil)
       @api_key = api_key || ENV['ANTHROPIC_API_KEY']
       @model = model || 'claude-sonnet-4-6'
+      @project_id = project_id
       @conversation_history = []
       @selected_tool_names = nil
       reset_metrics
@@ -254,6 +255,10 @@ module RedmineTxMcp
       if custom_prompt.present?
         parts << "## Additional Instructions\n#{custom_prompt.gsub('\\n', "\n")}"
       end
+      if @project_id
+        project = Project.find(@project_id)
+        parts << "Current project: #{project.name} (ID: #{project.id})"
+      end
       parts << "Current user: #{User.current&.name || 'Anonymous'}"
 
       parts.join("\n\n")
@@ -460,6 +465,13 @@ module RedmineTxMcp
         # Convert symbol keys to string keys for consistency
         params = tool_input.is_a?(Hash) ? tool_input.transform_keys(&:to_s) : {}
         params['_chatbot_context'] = true
+        # Auto-inject project_id if tool supports it and it wasn't explicitly provided
+        if @project_id && !params.key?('project_id')
+          tool_def = klass.available_tools.find { |t| t[:name] == tool_name }
+          if tool_def&.dig(:inputSchema, :properties, :project_id)
+            params['project_id'] = @project_id
+          end
+        end
         klass.call_tool(tool_name, params)
       else
         { error: "Unknown tool: #{tool_name}" }

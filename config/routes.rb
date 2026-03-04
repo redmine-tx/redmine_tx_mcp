@@ -16,12 +16,7 @@ get 'mcp_admin/settings', to: 'mcp_admin#settings'
 post 'mcp_admin/update_settings', to: 'mcp_admin#update_settings'
 get 'mcp_admin/models', to: 'mcp_admin#models'
 
-# Chatbot routes
-get 'chatbot', to: 'chatbot#global_chat'
-get 'chatbot/global', to: 'chatbot#global_chat'
-post 'chatbot/global/submit', to: 'chatbot#global_chat_submit', as: 'global_chat_submit_chatbot'
-post 'chatbot/reset', to: 'chatbot#reset', as: 'reset_chatbot'
-
 # Project-specific chatbot
-get 'projects/:project_id/chatbot', to: 'chatbot#index', as: 'project_chatbot'
+get  'projects/:project_id/chatbot',        to: 'chatbot#index',       as: 'project_chatbot'
 post 'projects/:project_id/chatbot/submit', to: 'chatbot#chat_submit', as: 'chat_submit_chatbot'
+post 'projects/:project_id/chatbot/reset',  to: 'chatbot#reset',      as: 'reset_chatbot'

@@ -361,7 +361,7 @@ module RedmineTxMcp
 
         def children_summary(args, chatbot: false)
           parent = Issue.visible.find(args['parent_id'])
-          children = parent.children.visible.includes(:status, :tracker, :assigned_to, :priority).to_a
+          children = parent.children.visible.includes(:status, :tracker, :assigned_to, :priority, :children).to_a
 
           today = Date.today
           grouped = {}
@@ -369,8 +369,12 @@ module RedmineTxMcp
 
           children.each do |child|
             stage_name = get_stage_name(child)
-            grouped[stage_name] ||= []
-            grouped[stage_name] << format_child_brief(child)
+
+            # 완료된 일감, 비일정 리프(버그/예외)는 집계만, 개별 출력 제외
+            unless child.status.is_closed? || non_schedule_leaf?(child)
+              grouped[stage_name] ||= []
+              grouped[stage_name] << format_child_brief(child)
+            end
 
             # Detect alerts
             if child.due_date && child.due_date < today && !child.status.is_closed?
@@ -423,13 +427,17 @@ module RedmineTxMcp
           alerts = []
           stage_counts = Hash.new(0)
 
-          parent_summaries = parent_issues.map do |parent|
+          parent_summaries = parent_issues.filter_map do |parent|
             children = parent.children.visible.includes(:status, :assigned_to).to_a
-            open_children = children.reject { |c| c.status.is_closed? }
-            overdue_children = open_children.select { |c| c.due_date && c.due_date < today }
 
             stage_name = get_stage_name(parent)
             stage_counts[stage_name] += 1
+
+            # 완료된 부모는 stage_counts만 반영, 상세 출력 제외
+            next if parent.status.is_closed?
+
+            open_children = children.reject { |c| c.status.is_closed? }
+            overdue_children = open_children.select { |c| c.due_date && c.due_date < today }
 
             # Alerts
             if overdue_children.any?
@@ -460,6 +468,7 @@ module RedmineTxMcp
 
           # Include standalone issues in stage counts
           standalone_issues.each { |i| stage_counts[get_stage_name(i)] += 1 }
+          standalone_open = standalone_issues.reject { |i| i.status.is_closed? || non_schedule_leaf?(i) }
 
           sorted_summaries = parent_summaries.sort_by { |p| [p[:children_overdue] > 0 ? 0 : 1, -(p[:children_total] - p[:children_completed])] }
 
@@ -481,7 +490,7 @@ module RedmineTxMcp
               total_issues: all_issues.size
             },
             parent_issues: sorted_summaries,
-            standalone_issues_count: standalone_issues.size,
+            standalone_issues_count: standalone_open.size,
             stage_summary: stage_counts,
             alerts: alerts
           }
@@ -671,6 +680,12 @@ module RedmineTxMcp
 
           code = issue.guide_tag
           { tip: issue.tip, tip_code: code&.to_s }
+        end
+
+        # 일정 관리 대상이 아닌 리프 노드 (버그/예외 트래커, 자식 없음)
+        def non_schedule_leaf?(issue)
+          return false unless Tracker.respond_to?(:is_bug?)
+          issue.children.empty? && (Tracker.is_bug?(issue.tracker_id) || Tracker.is_exception?(issue.tracker_id))
         end
 
         def build_type_breakdown(issues)

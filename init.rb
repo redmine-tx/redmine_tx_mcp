@@ -131,16 +131,17 @@ PROMPT
   project_module :redmine_tx_mcp do
     permission :use_mcp_api, { mcp: [:index, :call_tool, :list_tools, :get_tool] }
     permission :admin_mcp, { mcp_admin: [:index, :settings, :update_settings, :models] }
-    permission :use_chatbot, { chatbot: [:index, :chat_submit, :global_chat, :global_chat_submit, :reset] }
+    permission :use_chatbot, { chatbot: [:index, :chat_submit, :reset] }
   end
 
   menu :admin_menu, :mcp_settings, {
     controller: "mcp_admin", action: "index"
   }, caption: "MCP Settings"
 
-  menu :top_menu, :claude_chatbot, {
-    controller: "chatbot", action: "global_chat"
-  }, caption: "🤖 AI Assistant", if: Proc.new { User.current.allowed_to?(:use_chatbot, nil, global: true) }
+  menu :project_menu, :claude_chatbot, {
+    controller: "chatbot", action: "index"
+  }, caption: "AI Assistant", param: :project_id,
+     if: Proc.new { |p| User.current.allowed_to?(:use_chatbot, p) }
 end
 
 # MCP server is now accessible via Rails console
