@@ -8,6 +8,7 @@ module RedmineTxMcp
     class << self
       # Accepts an Anthropic-format request body and returns an Anthropic-format response hash.
       # Internally converts to OpenAI format, calls the endpoint, and converts back.
+      # Non-streaming call: waits for full response.
       def call(anthropic_request, api_key: nil, endpoint_url:)
         openai_body = convert_request(anthropic_request)
 
@@ -33,6 +34,100 @@ module RedmineTxMcp
 
         openai_response = JSON.parse(response.body)
         convert_response(openai_response)
+      end
+
+      # Streaming call: uses stream=true, yields :chunk events as tokens arrive,
+      # then returns the final assembled Anthropic-format response.
+      #
+      # Usage:
+      #   result = OpenaiAdapter.call_streaming(req, endpoint_url: url) do |event|
+      #     # event = { type: :chunk } — a new token arrived (for keep-alive / progress)
+      #   end
+      def call_streaming(anthropic_request, api_key: nil, endpoint_url:, &block)
+        openai_body = convert_request(anthropic_request).merge(stream: true)
+
+        uri = URI(endpoint_url)
+        http = Net::HTTP.new(uri.host, uri.port)
+        http.use_ssl = (uri.scheme == 'https')
+        http.open_timeout = 30
+        http.read_timeout = 300
+
+        request = Net::HTTP::Post.new(uri)
+        request['Content-Type'] = 'application/json'
+        request['Authorization'] = "Bearer #{api_key}" if api_key.present?
+        request.body = JSON.generate(openai_body)
+
+        Rails.logger.debug "[OpenaiAdapter] Streaming request: model=#{openai_body[:model]}"
+
+        # Accumulators for assembling the final response
+        content_text = +""
+        reasoning_text = +""
+        tool_calls_map = {}  # index → { id:, name:, arguments: }
+        finish_reason = nil
+        model = nil
+        msg_id = nil
+
+        http.request(request) do |response|
+          unless response.code == '200'
+            body = response.body
+            Rails.logger.error "[OpenaiAdapter] Stream API Error: #{response.code} - #{body}"
+            raise "OpenAI-compatible API Error: #{response.code} - #{body}"
+          end
+
+          buffer = +""
+          response.read_body do |chunk|
+            buffer << chunk
+            while (idx = buffer.index("\n\n"))
+              line = buffer.slice!(0, idx + 2).strip
+              next if line.empty?
+              next unless line.start_with?('data: ')
+
+              data_str = line.sub(/\Adata: /, '')
+              break if data_str == '[DONE]'
+
+              begin
+                data = JSON.parse(data_str)
+                msg_id ||= data['id']
+                model ||= data['model']
+
+                choice = (data['choices'] || []).first
+                next unless choice
+
+                delta = choice['delta'] || {}
+                finish_reason = choice['finish_reason'] if choice['finish_reason']
+
+                # Accumulate text content
+                content_text << delta['content'].to_s if delta['content']
+                reasoning_text << delta['reasoning'].to_s if delta['reasoning']
+
+                # Accumulate tool calls (may arrive across multiple chunks)
+                if delta['tool_calls'].is_a?(Array)
+                  delta['tool_calls'].each do |tc_delta|
+                    tc_idx = tc_delta['index'] || 0
+                    entry = (tool_calls_map[tc_idx] ||= { id: nil, name: +"", arguments: +"" })
+                    entry[:id] = tc_delta['id'] if tc_delta['id']
+                    if tc_delta['function']
+                      entry[:name] << tc_delta['function']['name'].to_s if tc_delta['function']['name']
+                      entry[:arguments] << tc_delta['function']['arguments'].to_s if tc_delta['function']['arguments']
+                    end
+                  end
+                end
+
+                # Notify caller that a chunk arrived (for progress indication)
+                block&.call({ type: :chunk })
+              rescue JSON::ParserError => e
+                Rails.logger.debug "[OpenaiAdapter] Skipping unparseable chunk: #{e.message}"
+              end
+            end
+          end
+        end
+
+        # Assemble into Anthropic-format response
+        assemble_streaming_response(
+          msg_id: msg_id, model: model, finish_reason: finish_reason,
+          content_text: content_text, reasoning_text: reasoning_text,
+          tool_calls_map: tool_calls_map
+        )
       end
 
       private
@@ -206,6 +301,50 @@ module RedmineTxMcp
           'model' => openai_resp['model'],
           'stop_reason' => stop_reason,
           'usage' => anthropic_usage
+        }
+      end
+
+      def assemble_streaming_response(msg_id:, model:, finish_reason:, content_text:, reasoning_text:, tool_calls_map:)
+        content_blocks = []
+
+        # Text content (fall back to reasoning for thinking models)
+        text = content_text.presence || reasoning_text.presence
+        content_blocks << { 'type' => 'text', 'text' => text } if text.present?
+
+        # Tool calls
+        tool_calls_map.sort_by { |idx, _| idx }.each do |_, tc|
+          tool_id = tc[:id] || "toolu_#{SecureRandom.hex(12)}"
+          parsed_args = begin
+            JSON.parse(tc[:arguments])
+          rescue JSON::ParserError
+            tc[:arguments].present? ? { '_raw' => tc[:arguments] } : {}
+          end
+
+          content_blocks << {
+            'type' => 'tool_use',
+            'id' => tool_id,
+            'name' => tc[:name],
+            'input' => parsed_args
+          }
+        end
+
+        content_blocks << { 'type' => 'text', 'text' => '' } if content_blocks.empty?
+
+        stop_reason = case finish_reason
+                      when 'stop' then 'end_turn'
+                      when 'tool_calls' then 'tool_use'
+                      when 'length' then 'max_tokens'
+                      else finish_reason || 'end_turn'
+                      end
+
+        {
+          'id' => msg_id || "msg_#{SecureRandom.hex(12)}",
+          'type' => 'message',
+          'role' => 'assistant',
+          'content' => content_blocks,
+          'model' => model,
+          'stop_reason' => stop_reason,
+          'usage' => { 'input_tokens' => 0, 'output_tokens' => 0 }
         }
       end
 

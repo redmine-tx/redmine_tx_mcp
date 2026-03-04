@@ -155,7 +155,13 @@ module RedmineTxMcp
         }
 
         yield({ type: 'thinking', message: 'Thinking...' })
-        response = call_claude_api(request_body)
+        first_chunk_received = false
+        response = call_claude_api(request_body) do |_event|
+          unless first_chunk_received
+            first_chunk_received = true
+            yield({ type: 'thinking', message: 'Generating response...' })
+          end
+        end
 
         tool_call_depth = 0
         max_tool_calls = (Setting.plugin_redmine_tx_mcp['max_tool_call_depth'].to_i rescue 10) || 10
@@ -208,7 +214,13 @@ module RedmineTxMcp
             }
 
             yield({ type: 'thinking', message: 'Analyzing results...' })
-            response = call_claude_api(request_body)
+            first_chunk_received = false
+            response = call_claude_api(request_body) do |_event|
+              unless first_chunk_received
+                first_chunk_received = true
+                yield({ type: 'thinking', message: 'Generating response...' })
+              end
+            end
           end
         end
 
@@ -325,11 +337,11 @@ module RedmineTxMcp
       end
     end
 
-    def call_claude_api(request_body)
+    def call_claude_api(request_body, &on_chunk)
       api_start = Process.clock_gettime(Process::CLOCK_MONOTONIC)
 
       parsed = if @provider == 'openai'
-        call_openai_api(request_body)
+        call_openai_api(request_body, &on_chunk)
       else
         call_anthropic_api(request_body)
       end
@@ -393,9 +405,13 @@ module RedmineTxMcp
       JSON.parse(response.body)
     end
 
-    def call_openai_api(request_body)
+    def call_openai_api(request_body, &on_chunk)
       Rails.logger.debug "OpenAI-compatible API Request: #{request_body.inspect}"
-      OpenaiAdapter.call(request_body, api_key: @api_key, endpoint_url: @endpoint_url)
+      if block_given?
+        OpenaiAdapter.call_streaming(request_body, api_key: @api_key, endpoint_url: @endpoint_url, &on_chunk)
+      else
+        OpenaiAdapter.call(request_body, api_key: @api_key, endpoint_url: @endpoint_url)
+      end
     end
 
     def handle_tool_calls(response)
