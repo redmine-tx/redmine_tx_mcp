@@ -50,6 +50,7 @@ module RedmineTxMcp
       # Set current user for MCP operations
       User.current = user || User.find(1)
       session_start = Process.clock_gettime(Process::CLOCK_MONOTONIC)
+      reset_metrics
 
       begin
         # Add user message to conversation
@@ -79,11 +80,13 @@ module RedmineTxMcp
         # Process tool calls if any (with recursion limit)
         tool_call_depth = 0
         max_tool_calls = Setting.plugin_redmine_tx_mcp['max_tool_call_depth'].to_i || 10
+        @metrics[:tool_call_depth] = 0
 
         while response['content'] && response['content'].any? { |c| c['type'] == 'tool_use' } && tool_call_depth < max_tool_calls
-          Rails.logger.info "Processing tool calls (depth: #{tool_call_depth + 1}/#{max_tool_calls})..."
-          response = handle_tool_calls(response)
           tool_call_depth += 1
+          @metrics[:tool_call_depth] = tool_call_depth
+          Rails.logger.info "Processing tool calls (depth: #{tool_call_depth}/#{max_tool_calls})..."
+          response = handle_tool_calls(response)
         end
 
         if tool_call_depth >= max_tool_calls
@@ -125,6 +128,7 @@ module RedmineTxMcp
     def chat_stream(user_message, user: nil)
       User.current = user || User.find(1)
       session_start = Process.clock_gettime(Process::CLOCK_MONOTONIC)
+      reset_metrics
 
       begin
         add_to_conversation('user', user_message)
@@ -148,8 +152,11 @@ module RedmineTxMcp
 
         tool_call_depth = 0
         max_tool_calls = (Setting.plugin_redmine_tx_mcp['max_tool_call_depth'].to_i rescue 10) || 10
+        @metrics[:tool_call_depth] = 0
 
         while response['content']&.any? { |c| c['type'] == 'tool_use' } && tool_call_depth < max_tool_calls
+          tool_call_depth += 1
+          @metrics[:tool_call_depth] = tool_call_depth
           tool_results = []
 
           response['content'].each do |content|
@@ -196,8 +203,6 @@ module RedmineTxMcp
             yield({ type: 'thinking', message: 'Analyzing results...' })
             response = call_claude_api(request_body)
           end
-
-          tool_call_depth += 1
         end
 
         assistant_message = extract_text_content(response)
@@ -352,13 +357,15 @@ module RedmineTxMcp
         session_id: conversation_id,
         user_name: User.current&.name || 'Anonymous',
         model: @model,
-        depth: @metrics[:api_calls],
+        loop_depth: @metrics[:tool_call_depth],
         max_depth: max_depth,
         stop_reason: parsed['stop_reason'],
         system_prompt_chars: system_prompt.length,
         message_count: messages.size,
         raw_message_count: @conversation_history.size,
+        budget_message_count: @metrics[:last_budget_message_count],
         tools_count: tools.size,
+        tool_names: @selected_tool_names&.join(', '),
         input_tokens: input_tokens,
         output_tokens: output_tokens
       )
@@ -461,11 +468,16 @@ module RedmineTxMcp
       duration_ms = ((Process.clock_gettime(Process::CLOCK_MONOTONIC) - tool_start) * 1000).round
       result_str = result.is_a?(String) ? result : JSON.generate(result)
 
+      # Calculate what the truncated size would be (for logging)
+      truncated_str = truncate_tool_result(result_str)
+      truncated_chars = truncated_str.length < result_str.length ? truncated_str.length : nil
+
       @metrics[:tool_executions] += 1
       ChatbotLogger.log_tool_execution(
         tool_name: tool_name,
         tool_input: tool_input.inspect,
         result_chars: result_str.length,
+        truncated_chars: truncated_chars,
         duration_ms: duration_ms
       )
 
@@ -632,6 +644,8 @@ module RedmineTxMcp
       end
 
       result = [first_msg] + selected
+
+      @metrics[:last_budget_message_count] = result.size
 
       if result.size < messages.size
         Rails.logger.info "[ClaudeChatbot] Budget trimmed history: #{messages.size} -> #{result.size} messages (#{MAX_HISTORY_CHARS} char budget)"

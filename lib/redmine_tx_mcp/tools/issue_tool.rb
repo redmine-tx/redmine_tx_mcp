@@ -239,10 +239,11 @@ module RedmineTxMcp
           # Sorting
           scope = apply_sort(scope, args['sort'])
 
-          # Pagination — chatbot defaults to 10 per page to reduce token usage
+          # Pagination — chatbot hard caps at 25 per page to prevent token explosion
           page = [args['page'].to_i, 1].max
+          max_per_page = chatbot ? 25 : 100
           default_per_page = chatbot ? 10 : 25
-          per_page = args['per_page'].to_i > 0 ? [[args['per_page'].to_i, 1].max, 100].min : default_per_page
+          per_page = args['per_page'].to_i > 0 ? [[args['per_page'].to_i, 1].max, max_per_page].min : default_per_page
           total = scope.count
           offset = (page - 1) * per_page
           items = scope.offset(offset).limit(per_page).to_a
