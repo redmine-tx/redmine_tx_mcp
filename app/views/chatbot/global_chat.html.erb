@@ -1,0 +1,284 @@
+<% content_for :header_tags do %>
+  <%= stylesheet_link_tag 'chatbot', plugin: :redmine_tx_mcp %>
+  <%= javascript_include_tag 'marked.min', plugin: :redmine_tx_mcp %>
+  <%= javascript_include_tag 'purify.min', plugin: :redmine_tx_mcp %>
+  <%= javascript_include_tag 'chatbot', plugin: :redmine_tx_mcp %>
+<% end %>
+
+<div class="contextual">
+  <%= link_to "Reset Chat", "#", onclick: "resetChat(); return false;", class: "icon icon-reload" %>
+</div>
+
+<h2>🤖 Claude AI Assistant</h2>
+
+<div class="box">
+  <div id="chat-container" class="chat-container">
+    <div id="chat-messages" class="chat-messages">
+      <% @conversation_history.each do |msg| %>
+        <div class="message <%= msg['role'] %>">
+          <div class="message-content<%= ' markdown-body' if msg['role'] == 'assistant' %>"
+               <% if msg['role'] == 'assistant' %>data-raw="<%= h(msg['content']) %>"<% end %>>
+            <%= simple_format(h(msg['content'])) %>
+          </div>
+          <div class="message-time">
+            <%= Time.parse(msg['timestamp']).strftime("%H:%M") rescue '' %>
+          </div>
+        </div>
+      <% end %>
+    </div>
+
+    <div class="chat-input-container">
+      <%= form_with url: global_chat_submit_chatbot_path, remote: true, local: false,
+                   html: { id: 'chat-form', class: 'chat-form' } do |form| %>
+        <div class="input-group">
+          <%= form.text_area :message, placeholder: "Ask me anything about Redmine...",
+                            rows: 2, class: 'chat-input', id: 'chat-input' %>
+          <%= form.submit "Send", class: 'btn btn-primary chat-send-btn', id: 'send-btn' %>
+        </div>
+      <% end %>
+    </div>
+  </div>
+</div>
+
+<div class="box">
+  <h3>💡 What can I help you with?</h3>
+  <ul>
+    <li><strong>Issue Management</strong>: "Show me open issues", "Create a new bug report", "Who is assigned to issue #123?"</li>
+    <li><strong>Project Information</strong>: "List all projects", "What's the status of Project ABC?", "Show project statistics"</li>
+    <li><strong>Search & Filter</strong>: "Find issues containing 'login error'", "Show high priority issues"</li>
+    <li><strong>General Questions</strong>: "How many issues were created this week?", "What are the most active projects?"</li>
+  </ul>
+</div>
+
+<script type="text/javascript">
+document.addEventListener('DOMContentLoaded', function() {
+  renderExistingMarkdown();
+  initializeChatbot();
+});
+
+function renderMarkdown(text) {
+  if (typeof marked !== 'undefined' && typeof DOMPurify !== 'undefined') {
+    var raw = marked.parse(text, { breaks: true, gfm: true });
+    return DOMPurify.sanitize(raw);
+  }
+  return escapeHtml(text).replace(/\n/g, '<br>');
+}
+
+function renderExistingMarkdown() {
+  var els = document.querySelectorAll('.message.assistant .message-content.markdown-body[data-raw]');
+  for (var i = 0; i < els.length; i++) {
+    var raw = els[i].getAttribute('data-raw');
+    if (raw) els[i].innerHTML = renderMarkdown(raw);
+  }
+}
+
+function initializeChatbot() {
+  var form = document.getElementById('chat-form');
+  var input = document.getElementById('chat-input');
+  var sendBtn = document.getElementById('send-btn');
+  var csrfToken = document.querySelector('meta[name="csrf-token"]').getAttribute('content');
+
+  input.focus();
+
+  input.addEventListener('keydown', function(e) {
+    if (e.key === 'Enter' && !e.shiftKey) {
+      e.preventDefault();
+      form.dispatchEvent(new Event('submit'));
+    }
+  });
+
+  form.addEventListener('submit', function(e) {
+    e.preventDefault();
+
+    var message = input.value.trim();
+    if (!message) return;
+
+    input.disabled = true;
+    sendBtn.disabled = true;
+    sendBtn.textContent = 'Sending...';
+
+    addMessage('user', message);
+    input.value = '';
+
+    sendStreamingRequest(form.action, message, csrfToken)
+      .finally(function() {
+        input.disabled = false;
+        sendBtn.disabled = false;
+        sendBtn.textContent = 'Send';
+        input.focus();
+      });
+  });
+}
+
+function sendStreamingRequest(url, message, csrfToken) {
+  var statusEl = showStatus('Connecting...');
+
+  return fetch(url, {
+    method: 'POST',
+    headers: {
+      'Content-Type': 'application/json',
+      'Accept': 'text/event-stream',
+      'X-CSRF-Token': csrfToken
+    },
+    body: JSON.stringify({ message: message })
+  })
+  .then(function(response) {
+    var contentType = response.headers.get('Content-Type') || '';
+
+    // If server returned JSON instead of SSE, fall back to non-streaming
+    if (contentType.indexOf('application/json') !== -1) {
+      return response.json().then(function(data) {
+        removeStatus(statusEl);
+        if (data.success) {
+          addMessage('assistant', data.message);
+        } else {
+          addMessage('error', data.error || 'An error occurred');
+        }
+      });
+    }
+
+    // Stream SSE response
+    var reader = response.body.getReader();
+    var decoder = new TextDecoder();
+    var buffer = '';
+
+    function processStream() {
+      return reader.read().then(function(result) {
+        if (result.done) {
+          removeStatus(statusEl);
+          return;
+        }
+
+        buffer += decoder.decode(result.value, { stream: true });
+        var parts = buffer.split('\n\n');
+        buffer = parts.pop();
+
+        for (var i = 0; i < parts.length; i++) {
+          var lines = parts[i].split('\n');
+          for (var j = 0; j < lines.length; j++) {
+            if (lines[j].indexOf('data: ') === 0) {
+              try {
+                var event = JSON.parse(lines[j].substring(6));
+                handleStreamEvent(event, statusEl);
+              } catch(e) {}
+            }
+          }
+        }
+
+        return processStream();
+      });
+    }
+
+    return processStream();
+  })
+  .catch(function(error) {
+    console.error('Stream error:', error);
+    removeStatus(statusEl);
+    addMessage('error', 'Failed to send message. Please try again.');
+  });
+}
+
+function handleStreamEvent(event, statusEl) {
+  switch (event.type) {
+    case 'thinking':
+      updateStatus(statusEl, event.message);
+      break;
+    case 'tool_call':
+      var toolLabel = formatToolName(event.tool);
+      updateStatus(statusEl, 'Calling ' + toolLabel + '...');
+      break;
+    case 'tool_result':
+      updateStatus(statusEl, formatToolName(event.tool) + ' done');
+      break;
+    case 'answer':
+      removeStatus(statusEl);
+      addMessage('assistant', event.message);
+      break;
+    case 'error':
+      removeStatus(statusEl);
+      addMessage('error', event.message || 'An error occurred');
+      break;
+    case 'done':
+      removeStatus(statusEl);
+      break;
+  }
+}
+
+function formatToolName(name) {
+  if (!name) return 'tool';
+  return name.replace(/_/g, ' ');
+}
+
+function showStatus(text) {
+  var container = document.getElementById('chat-messages');
+  var el = document.createElement('div');
+  el.className = 'message assistant status-message';
+  el.innerHTML = '<div class="message-content status-indicator">' +
+    '<span class="status-spinner"></span>' +
+    '<span class="status-text">' + escapeHtml(text) + '</span>' +
+    '</div>';
+  container.appendChild(el);
+  container.scrollTop = container.scrollHeight;
+  return el;
+}
+
+function updateStatus(el, text) {
+  if (!el) return;
+  var textEl = el.querySelector('.status-text');
+  if (textEl) textEl.textContent = text;
+  var container = document.getElementById('chat-messages');
+  container.scrollTop = container.scrollHeight;
+}
+
+function removeStatus(el) {
+  if (el && el.parentNode) el.parentNode.removeChild(el);
+}
+
+function addMessage(role, content) {
+  var container = document.getElementById('chat-messages');
+  var messageDiv = document.createElement('div');
+  messageDiv.className = 'message ' + role;
+
+  var now = new Date();
+  var timeStr = now.toLocaleTimeString([], {hour: '2-digit', minute:'2-digit'});
+
+  var contentDiv = document.createElement('div');
+  if (role === 'assistant') {
+    contentDiv.className = 'message-content markdown-body';
+    contentDiv.innerHTML = renderMarkdown(content);
+  } else {
+    contentDiv.className = 'message-content';
+    contentDiv.innerHTML = escapeHtml(content).replace(/\n/g, '<br>');
+  }
+
+  var timeDiv = document.createElement('div');
+  timeDiv.className = 'message-time';
+  timeDiv.textContent = timeStr;
+
+  messageDiv.appendChild(contentDiv);
+  messageDiv.appendChild(timeDiv);
+
+  container.appendChild(messageDiv);
+  container.scrollTop = container.scrollHeight;
+}
+
+function escapeHtml(text) {
+  var div = document.createElement('div');
+  div.textContent = text;
+  return div.innerHTML;
+}
+
+function resetChat() {
+  if (confirm('Are you sure you want to reset the chat?')) {
+    fetch('<%= reset_chatbot_path %>', {
+      method: 'POST',
+      headers: {
+        'X-CSRF-Token': document.querySelector('meta[name="csrf-token"]').getAttribute('content')
+      }
+    })
+    .then(function() {
+      location.reload();
+    });
+  }
+}
+</script>

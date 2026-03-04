@@ -1,0 +1,113 @@
+<% content_for :header_tags do %>
+  <%= stylesheet_link_tag 'mcp_admin', plugin: :redmine_tx_mcp %>
+<% end %>
+
+<div class="contextual">
+  <%= link_to "Settings", mcp_admin_settings_path, class: "icon icon-settings" %>
+</div>
+
+<h2>Model Context Protocol (MCP) Server Status</h2>
+
+<div class="box">
+  <h3>Server Status</h3>
+  <table class="list">
+    <tbody>
+      <tr>
+        <th>Server Loaded:</th>
+        <td class="<%= @mcp_status[:server_loaded] ? 'mcp-status-success' : 'mcp-status-error' %>">
+          <%= @mcp_status[:server_loaded] ? 'Yes' : 'No' %>
+        </td>
+      </tr>
+      <% if @mcp_status[:tools_loaded] %>
+        <tr>
+          <th>Issue Tool:</th>
+          <td class="<%= @mcp_status[:tools_loaded][:issue_tool] ? 'mcp-status-success' : 'mcp-status-error' %>">
+            <%= @mcp_status[:tools_loaded][:issue_tool] ? 'Loaded' : 'Failed' %>
+          </td>
+        </tr>
+        <tr>
+          <th>Project Tool:</th>
+          <td class="<%= @mcp_status[:tools_loaded][:project_tool] ? 'mcp-status-success' : 'mcp-status-error' %>">
+            <%= @mcp_status[:tools_loaded][:project_tool] ? 'Loaded' : 'Failed' %>
+          </td>
+        </tr>
+        <tr>
+          <th>User Tool:</th>
+          <td class="<%= @mcp_status[:tools_loaded][:user_tool] ? 'mcp-status-success' : 'mcp-status-error' %>">
+            <%= @mcp_status[:tools_loaded][:user_tool] ? 'Loaded' : 'Failed' %>
+          </td>
+        </tr>
+      <% end %>
+      <tr>
+        <th>Enabled:</th>
+        <td class="<%= (@mcp_status[:settings] && @mcp_status[:settings]['enabled'] == '1') ? 'mcp-status-success' : 'mcp-status-warning' %>">
+          <%= (@mcp_status[:settings] && @mcp_status[:settings]['enabled'] == '1') ? 'Yes' : 'No' %>
+        </td>
+      </tr>
+      <% if @mcp_status[:error] %>
+        <tr>
+          <th>Error:</th>
+          <td class="mcp-status-error"><%= @mcp_status[:error] %></td>
+        </tr>
+      <% end %>
+    </tbody>
+  </table>
+</div>
+
+<div class="box">
+  <h3>Available Tools (<%= @available_tools.count %>)</h3>
+  <% if @available_tools.any? %>
+    <table class="list">
+      <thead>
+        <tr>
+          <th>Tool Name</th>
+          <th>Description</th>
+          <th>Category</th>
+        </tr>
+      </thead>
+      <tbody>
+        <% @available_tools.each do |tool| %>
+          <tr>
+            <td><code><%= tool[:name] %></code></td>
+            <td><%= tool[:description] %></td>
+            <td>
+              <% case tool[:name] %>
+              <% when /^issue_/ %>
+                <span class="label label-issue">Issues</span>
+              <% when /^project_/ %>
+                <span class="label label-project">Projects</span>
+              <% when /^user_/ %>
+                <span class="label label-user">Users</span>
+              <% end %>
+            </td>
+          </tr>
+        <% end %>
+      </tbody>
+    </table>
+  <% else %>
+    <p>No tools available. Check server status above.</p>
+  <% end %>
+</div>
+
+<div class="box">
+  <h3>Usage Instructions</h3>
+  <h4>Claude Desktop Integration</h4>
+  <p>To integrate with Claude Desktop, add the following configuration to your <code>claude_desktop_config.json</code>:</p>
+
+  <pre><code>{
+  "mcpServers": {
+    "redmine": {
+      "command": "cd",
+      "args": ["<%= Rails.root %>", "&&", "bundle", "exec", "ruby", "-e", "
+        require_relative 'config/environment'
+        RedmineTxMcp::McpServer.start_server
+      "]
+    }
+  }
+}</code></pre>
+
+  <h4>Direct STDIO Usage</h4>
+  <p>You can also run the MCP server directly:</p>
+  <pre><code>cd <%= Rails.root %>
+bundle exec ruby -e "require_relative 'config/environment'; RedmineTxMcp::McpServer.start_server"</code></pre>
+</div>

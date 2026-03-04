@@ -1,0 +1,152 @@
+<div class="box tabular">
+  <p>
+    <%= check_box_tag 'settings[enabled]', '1', @settings['enabled'], id: 'settings_enabled' %>
+    <%= label_tag 'settings_enabled', 'Enable MCP Server' %>
+  </p>
+
+  <p>
+    <%= label_tag 'settings_api_key', 'MCP API Key' %>
+    <%= text_field_tag 'settings[api_key]', @settings['api_key'], placeholder: 'Enter API key for MCP authentication' %>
+    <em>Used to authenticate MCP client connections</em>
+  </p>
+
+  <p>
+    <%= label_tag 'settings_claude_api_key', 'Claude API Key' %>
+    <%= text_field_tag 'settings[claude_api_key]', @settings['claude_api_key'], placeholder: 'Enter Anthropic Claude API key' %>
+    <em>Used for the AI chatbot feature. Get your key from <a href="https://console.anthropic.com/" target="_blank">Anthropic Console</a></em>
+  </p>
+
+  <p>
+    <%= label_tag 'settings_claude_model', 'Claude Model' %>
+    <span id="claude-model-wrapper" style="display: inline-flex; align-items: center; gap: 6px;">
+      <%= select_tag 'settings[claude_model]',
+            options_for_select([
+              ['Claude 4.6 Opus', 'claude-opus-4-6'],
+              ['Claude 4.6 Sonnet', 'claude-sonnet-4-6'],
+              ['Claude 4.5 Haiku', 'claude-haiku-4-5-20251001'],
+              ['Claude 4.5 Sonnet', 'claude-sonnet-4-5-20250514'],
+              ['Claude 4.5 Opus', 'claude-opus-4-5-20250514'],
+              ['Claude 3.5 Haiku', 'claude-3-5-haiku-latest'],
+              ['Claude 3.5 Sonnet', 'claude-3-5-sonnet-latest'],
+            ], @settings['claude_model'] || 'claude-sonnet-4-6'),
+            id: 'settings_claude_model' %>
+      <button type="button" id="claude-model-refresh" title="Refresh model list from Anthropic API"
+              style="cursor: pointer; padding: 2px 6px; font-size: 14px; line-height: 1; border: 1px solid #ccc; border-radius: 3px; background: #f5f5f5;">&#x21bb;</button>
+      <span id="claude-model-loading" style="display: none; font-size: 12px; color: #888;">Loading models...</span>
+    </span>
+    <em>Select the Claude model to use for the chatbot. Models are loaded from the Anthropic API when a valid API key is set.</em>
+  </p>
+
+  <script type="text/javascript">
+  (function() {
+    var select = document.getElementById('settings_claude_model');
+    var refreshBtn = document.getElementById('claude-model-refresh');
+    var loading = document.getElementById('claude-model-loading');
+    var savedValue = select.value;
+
+    function loadModels(refresh) {
+      var url = '<%= escape_javascript(url_for(controller: 'mcp_admin', action: 'models', only_path: true)) %>';
+      if (refresh) url += '?refresh=1';
+
+      loading.style.display = 'inline';
+      refreshBtn.disabled = true;
+
+      var xhr = new XMLHttpRequest();
+      xhr.open('GET', url, true);
+      xhr.setRequestHeader('Accept', 'application/json');
+      xhr.setRequestHeader('X-Requested-With', 'XMLHttpRequest');
+      xhr.onreadystatechange = function() {
+        if (xhr.readyState !== 4) return;
+
+        loading.style.display = 'none';
+        refreshBtn.disabled = false;
+
+        if (xhr.status !== 200) return;
+
+        try {
+          var data = JSON.parse(xhr.responseText);
+          if (!data.success || !data.models || data.models.length === 0) return;
+
+          var currentValue = select.value;
+          select.innerHTML = '';
+
+          var found = false;
+          for (var i = 0; i < data.models.length; i++) {
+            var m = data.models[i];
+            var opt = document.createElement('option');
+            opt.value = m.id;
+            opt.textContent = m.display_name;
+            if (m.id === currentValue) found = true;
+            select.appendChild(opt);
+          }
+
+          if (!found && currentValue) {
+            var prev = document.createElement('option');
+            prev.value = currentValue;
+            prev.textContent = currentValue + ' (previously selected)';
+            select.insertBefore(prev, select.firstChild);
+          }
+
+          select.value = currentValue;
+        } catch(e) {
+          // parse error — keep fallback options
+        }
+      };
+      xhr.send();
+    }
+
+    refreshBtn.addEventListener('click', function() { loadModels(true); });
+    loadModels(false);
+  })();
+  </script>
+
+  <p>
+    <%= label_tag 'settings_system_prompt', 'System Prompt' %>
+    <%= text_area_tag 'settings[system_prompt]', @settings['system_prompt'],
+                     rows: 8,
+                     style: 'width: 100%; font-family: monospace;',
+                     placeholder: 'Additional instructions for the AI assistant (optional)...' %>
+    <em>Additional instructions appended to the built-in system prompt. The built-in prompt (tool docs, workflow, reporting guidelines) is always active. Leave blank if no extra instructions are needed.</em>
+  </p>
+
+  <p>
+    <%= label_tag 'settings_allowed_origins', 'Allowed Origins' %>
+    <%= text_area_tag 'settings[allowed_origins]', @settings['allowed_origins'], rows: 3, placeholder: 'localhost:3000\nexample.com\n\n(Leave blank to allow ALL origins)' %>
+    <em>One origin per line. <strong>Leave completely blank to allow ALL origins (*)</strong></em>
+  </p>
+
+  <p>
+    <%= label_tag 'settings_log_level', 'Log Level' %>
+    <%= select_tag 'settings[log_level]',
+          options_for_select([
+            ['Debug', 'debug'],
+            ['Info', 'info'],
+            ['Warn', 'warn'],
+            ['Error', 'error']
+          ], @settings['log_level'] || 'info') %>
+  </p>
+
+  <p>
+    <%= label_tag 'settings_max_request_size', 'Max Request Size (KB)' %>
+    <%= number_field_tag 'settings[max_request_size]', @settings['max_request_size'] || 1024, min: 1 %>
+    <em>Maximum size for MCP requests in KB</em>
+  </p>
+
+  <p>
+    <%= check_box_tag 'settings[enable_caching]', '1', @settings['enable_caching'], id: 'settings_enable_caching' %>
+    <%= label_tag 'settings_enable_caching', 'Enable Response Caching' %>
+    <em>Cache frequently requested data to improve performance</em>
+  </p>
+
+  <p>
+    <%= label_tag 'settings_cache_ttl', 'Cache TTL (seconds)' %>
+    <%= number_field_tag 'settings[cache_ttl]', @settings['cache_ttl'] || 300, min: 1 %>
+    <em>Time-to-live for cached responses</em>
+  </p>
+
+  <p>
+    <%= label_tag 'settings_max_tool_call_depth', 'Max Tool Call Depth' %>
+    <%= number_field_tag 'settings[max_tool_call_depth]', @settings['max_tool_call_depth'] || 10, min: 1, max: 50 %>
+    <em>Maximum depth for recursive tool calls (default: 10). Higher values allow more complex operations but may increase response time.</em>
+  </p>
+</div>
