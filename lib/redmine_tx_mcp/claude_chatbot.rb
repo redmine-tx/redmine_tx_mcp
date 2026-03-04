@@ -519,18 +519,25 @@ module RedmineTxMcp
     end
 
     def reset_metrics
-      @metrics = { api_calls: 0, tool_executions: 0, input_tokens: 0, output_tokens: 0 }
+      @metrics = {
+        api_calls: 0, tool_executions: 0,
+        input_tokens: 0, output_tokens: 0,
+        tool_call_depth: 0, last_budget_message_count: nil
+      }
     end
 
     def log_session_summary(session_start)
       total_ms = ((Process.clock_gettime(Process::CLOCK_MONOTONIC) - session_start) * 1000).round
+      history_chars = @conversation_history.sum { |m| message_chars(m) }
       ChatbotLogger.log_session_summary(
         session_id: conversation_id,
         api_calls: @metrics[:api_calls],
         tool_executions: @metrics[:tool_executions],
         input_tokens: @metrics[:input_tokens],
         output_tokens: @metrics[:output_tokens],
-        total_duration_ms: total_ms
+        total_duration_ms: total_ms,
+        history_message_count: @conversation_history.size,
+        history_chars: history_chars
       )
     end
 
