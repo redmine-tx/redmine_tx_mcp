@@ -12,6 +12,8 @@ require "redmine_tx_mcp/tools/user_tool"
 require "redmine_tx_mcp/tools/version_tool"
 require "redmine_tx_mcp/tools/enumeration_tool"
 require "redmine_tx_mcp/anthropic_models_service"
+require "redmine_tx_mcp/openai_adapter"
+require "redmine_tx_mcp/openai_models_service"
 require "redmine_tx_mcp/chatbot_logger"
 
 Redmine::Plugin.register :redmine_tx_mcp do
@@ -120,6 +122,10 @@ Each issue has `tip` (localized text) and `tip_code` (stable English key).
 ## Response Language
 Respond in Korean when the user writes in Korean, otherwise respond in English.
 PROMPT
+    llm_provider: 'anthropic',
+    openai_endpoint_url: '',
+    openai_api_key: '',
+    openai_model: '',
     allowed_origins: '',
     log_level: 'info',
     max_request_size: 1024,

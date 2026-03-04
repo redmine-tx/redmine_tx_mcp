@@ -36,15 +36,21 @@ module RedmineTxMcp
 
     BASE_TOOLS = %w[issue_list issue_get].freeze
 
-    def initialize(api_key: nil, model: nil, project_id: nil)
-      @api_key = api_key || ENV['ANTHROPIC_API_KEY']
+    def initialize(api_key: nil, model: nil, project_id: nil, provider: 'anthropic', endpoint_url: nil)
+      @provider = provider.to_s
+      @endpoint_url = endpoint_url
       @model = model || 'claude-sonnet-4-6'
       @project_id = project_id
       @conversation_history = []
       @selected_tool_names = nil
       reset_metrics
 
-      raise ArgumentError, "Claude API key is required" unless @api_key
+      if @provider == 'openai'
+        @api_key = api_key  # May be nil for local LLMs
+      else
+        @api_key = api_key || ENV['ANTHROPIC_API_KEY']
+        raise ArgumentError, "Claude API key is required" unless @api_key
+      end
     end
 
     def chat(user_message, user: nil)
@@ -320,30 +326,15 @@ module RedmineTxMcp
     end
 
     def call_claude_api(request_body)
-      uri = URI(CLAUDE_API_URL)
-      http = Net::HTTP.new(uri.host, uri.port)
-      http.use_ssl = true
-
-      request = Net::HTTP::Post.new(uri)
-      request['Content-Type'] = 'application/json'
-      request['x-api-key'] = @api_key
-      request['anthropic-version'] = '2023-06-01'
-      request.body = JSON.generate(request_body)
-
-      # Log the request for debugging
-      Rails.logger.debug "Claude API Request: #{request_body.inspect}"
-
       api_start = Process.clock_gettime(Process::CLOCK_MONOTONIC)
-      response = http.request(request)
-      api_duration_ms = ((Process.clock_gettime(Process::CLOCK_MONOTONIC) - api_start) * 1000).round
 
-      unless response.code == '200'
-        Rails.logger.error "Claude API Error: #{response.code} - #{response.body}"
-        Rails.logger.error "Request body: #{JSON.pretty_generate(request_body)}"
-        raise "Claude API Error: #{response.code} - #{response.body}"
+      parsed = if @provider == 'openai'
+        call_openai_api(request_body)
+      else
+        call_anthropic_api(request_body)
       end
 
-      parsed = JSON.parse(response.body)
+      api_duration_ms = ((Process.clock_gettime(Process::CLOCK_MONOTONIC) - api_start) * 1000).round
 
       # Track metrics and log detail
       @metrics[:api_calls] += 1
@@ -376,6 +367,35 @@ module RedmineTxMcp
       )
 
       parsed
+    end
+
+    def call_anthropic_api(request_body)
+      uri = URI(CLAUDE_API_URL)
+      http = Net::HTTP.new(uri.host, uri.port)
+      http.use_ssl = true
+
+      request = Net::HTTP::Post.new(uri)
+      request['Content-Type'] = 'application/json'
+      request['x-api-key'] = @api_key
+      request['anthropic-version'] = '2023-06-01'
+      request.body = JSON.generate(request_body)
+
+      Rails.logger.debug "Claude API Request: #{request_body.inspect}"
+
+      response = http.request(request)
+
+      unless response.code == '200'
+        Rails.logger.error "Claude API Error: #{response.code} - #{response.body}"
+        Rails.logger.error "Request body: #{JSON.pretty_generate(request_body)}"
+        raise "Claude API Error: #{response.code} - #{response.body}"
+      end
+
+      JSON.parse(response.body)
+    end
+
+    def call_openai_api(request_body)
+      Rails.logger.debug "OpenAI-compatible API Request: #{request_body.inspect}"
+      OpenaiAdapter.call(request_body, api_key: @api_key, endpoint_url: @endpoint_url)
     end
 
     def handle_tool_calls(response)

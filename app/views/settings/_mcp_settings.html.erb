@@ -11,45 +11,106 @@
   </p>
 
   <p>
-    <%= label_tag 'settings_claude_api_key', 'Claude API Key' %>
-    <%= text_field_tag 'settings[claude_api_key]', @settings['claude_api_key'], placeholder: 'Enter Anthropic Claude API key' %>
-    <em>Used for the AI chatbot feature. Get your key from <a href="https://console.anthropic.com/" target="_blank">Anthropic Console</a></em>
+    <%= label_tag 'settings_llm_provider', 'LLM Provider' %>
+    <%= select_tag 'settings[llm_provider]',
+          options_for_select([
+            ['Anthropic Claude', 'anthropic'],
+            ['OpenAI-Compatible (Ollama, vLLM, etc.)', 'openai'],
+          ], @settings['llm_provider'] || 'anthropic'),
+          id: 'settings_llm_provider' %>
   </p>
 
-  <p>
-    <%= label_tag 'settings_claude_model', 'Claude Model' %>
-    <span id="claude-model-wrapper" style="display: inline-flex; align-items: center; gap: 6px;">
-      <%= select_tag 'settings[claude_model]',
-            options_for_select([
-              ['Claude 4.6 Opus', 'claude-opus-4-6'],
-              ['Claude 4.6 Sonnet', 'claude-sonnet-4-6'],
-              ['Claude 4.5 Haiku', 'claude-haiku-4-5-20251001'],
-              ['Claude 4.5 Sonnet', 'claude-sonnet-4-5-20250514'],
-              ['Claude 4.5 Opus', 'claude-opus-4-5-20250514'],
-              ['Claude 3.5 Haiku', 'claude-3-5-haiku-latest'],
-              ['Claude 3.5 Sonnet', 'claude-3-5-sonnet-latest'],
-            ], @settings['claude_model'] || 'claude-sonnet-4-6'),
-            id: 'settings_claude_model' %>
-      <button type="button" id="claude-model-refresh" title="Refresh model list from Anthropic API"
-              style="cursor: pointer; padding: 2px 6px; font-size: 14px; line-height: 1; border: 1px solid #ccc; border-radius: 3px; background: #f5f5f5;">&#x21bb;</button>
-      <span id="claude-model-loading" style="display: none; font-size: 12px; color: #888;">Loading models...</span>
-    </span>
-    <em>Select the Claude model to use for the chatbot. Models are loaded from the Anthropic API when a valid API key is set.</em>
-  </p>
+  <!-- Anthropic settings -->
+  <div id="anthropic-settings">
+    <p>
+      <%= label_tag 'settings_claude_api_key', 'Claude API Key' %>
+      <%= text_field_tag 'settings[claude_api_key]', @settings['claude_api_key'], placeholder: 'Enter Anthropic Claude API key' %>
+      <em>Used for the AI chatbot feature. Get your key from <a href="https://console.anthropic.com/" target="_blank">Anthropic Console</a></em>
+    </p>
+
+    <p>
+      <%= label_tag 'settings_claude_model', 'Claude Model' %>
+      <span id="claude-model-wrapper" style="display: inline-flex; align-items: center; gap: 6px;">
+        <%= select_tag 'settings[claude_model]',
+              options_for_select([
+                ['Claude 4.6 Opus', 'claude-opus-4-6'],
+                ['Claude 4.6 Sonnet', 'claude-sonnet-4-6'],
+                ['Claude 4.5 Haiku', 'claude-haiku-4-5-20251001'],
+                ['Claude 4.5 Sonnet', 'claude-sonnet-4-5-20250514'],
+                ['Claude 4.5 Opus', 'claude-opus-4-5-20250514'],
+                ['Claude 3.5 Haiku', 'claude-3-5-haiku-latest'],
+                ['Claude 3.5 Sonnet', 'claude-3-5-sonnet-latest'],
+              ], @settings['claude_model'] || 'claude-sonnet-4-6'),
+              id: 'settings_claude_model' %>
+        <button type="button" id="claude-model-refresh" title="Refresh model list from Anthropic API"
+                style="cursor: pointer; padding: 2px 6px; font-size: 14px; line-height: 1; border: 1px solid #ccc; border-radius: 3px; background: #f5f5f5;">&#x21bb;</button>
+        <span id="claude-model-loading" style="display: none; font-size: 12px; color: #888;">Loading models...</span>
+      </span>
+      <em>Select the Claude model to use for the chatbot.</em>
+    </p>
+  </div>
+
+  <!-- OpenAI-Compatible settings -->
+  <div id="openai-settings" style="display: none;">
+    <p>
+      <%= label_tag 'settings_openai_endpoint_url', 'Endpoint URL' %>
+      <%= text_field_tag 'settings[openai_endpoint_url]', @settings['openai_endpoint_url'],
+            placeholder: 'http://localhost:11434/v1/chat/completions',
+            style: 'width: 400px;' %>
+      <em>OpenAI-compatible chat completions endpoint (e.g. Ollama: <code>http://localhost:11434/v1/chat/completions</code>)</em>
+    </p>
+
+    <p>
+      <%= label_tag 'settings_openai_api_key', 'API Key (optional)' %>
+      <%= text_field_tag 'settings[openai_api_key]', @settings['openai_api_key'],
+            placeholder: 'Leave blank for local LLMs' %>
+      <em>Optional. Only needed if your endpoint requires authentication.</em>
+    </p>
+
+    <p>
+      <%= label_tag 'settings_openai_model', 'Model' %>
+      <span id="openai-model-wrapper" style="display: inline-flex; align-items: center; gap: 6px;">
+        <%= select_tag 'settings[openai_model]',
+              options_for_select(
+                (@settings['openai_model'].present? ? [[@settings['openai_model'], @settings['openai_model']]] : [['(select a model)', '']]),
+                @settings['openai_model'] || ''
+              ),
+              id: 'settings_openai_model' %>
+        <button type="button" id="openai-model-refresh" title="Refresh model list from endpoint"
+                style="cursor: pointer; padding: 2px 6px; font-size: 14px; line-height: 1; border: 1px solid #ccc; border-radius: 3px; background: #f5f5f5;">&#x21bb;</button>
+        <span id="openai-model-loading" style="display: none; font-size: 12px; color: #888;">Loading models...</span>
+      </span>
+      <em>Select a model from the endpoint. Click refresh after setting the endpoint URL.</em>
+    </p>
+  </div>
 
   <script type="text/javascript">
   (function() {
-    var select = document.getElementById('settings_claude_model');
-    var refreshBtn = document.getElementById('claude-model-refresh');
-    var loading = document.getElementById('claude-model-loading');
-    var savedValue = select.value;
+    var providerSelect = document.getElementById('settings_llm_provider');
+    var anthropicSection = document.getElementById('anthropic-settings');
+    var openaiSection = document.getElementById('openai-settings');
 
-    function loadModels(refresh) {
+    function toggleProviderSections() {
+      var provider = providerSelect.value;
+      anthropicSection.style.display = (provider === 'anthropic') ? '' : 'none';
+      openaiSection.style.display = (provider === 'openai') ? '' : 'none';
+    }
+
+    providerSelect.addEventListener('change', toggleProviderSections);
+    toggleProviderSections();
+
+    // ─── Anthropic model loader ───
+    var claudeSelect = document.getElementById('settings_claude_model');
+    var claudeRefreshBtn = document.getElementById('claude-model-refresh');
+    var claudeLoading = document.getElementById('claude-model-loading');
+
+    function loadModels(selectEl, loadingEl, refreshBtnEl, providerParam, refresh) {
       var url = '<%= escape_javascript(url_for(controller: 'mcp_admin', action: 'models', only_path: true)) %>';
-      if (refresh) url += '?refresh=1';
+      url += '?provider=' + providerParam;
+      if (refresh) url += '&refresh=1';
 
-      loading.style.display = 'inline';
-      refreshBtn.disabled = true;
+      loadingEl.style.display = 'inline';
+      refreshBtnEl.disabled = true;
 
       var xhr = new XMLHttpRequest();
       xhr.open('GET', url, true);
@@ -58,8 +119,8 @@
       xhr.onreadystatechange = function() {
         if (xhr.readyState !== 4) return;
 
-        loading.style.display = 'none';
-        refreshBtn.disabled = false;
+        loadingEl.style.display = 'none';
+        refreshBtnEl.disabled = false;
 
         if (xhr.status !== 200) return;
 
@@ -67,8 +128,8 @@
           var data = JSON.parse(xhr.responseText);
           if (!data.success || !data.models || data.models.length === 0) return;
 
-          var currentValue = select.value;
-          select.innerHTML = '';
+          var currentValue = selectEl.value;
+          selectEl.innerHTML = '';
 
           var found = false;
           for (var i = 0; i < data.models.length; i++) {
@@ -77,17 +138,17 @@
             opt.value = m.id;
             opt.textContent = m.display_name;
             if (m.id === currentValue) found = true;
-            select.appendChild(opt);
+            selectEl.appendChild(opt);
           }
 
           if (!found && currentValue) {
             var prev = document.createElement('option');
             prev.value = currentValue;
             prev.textContent = currentValue + ' (previously selected)';
-            select.insertBefore(prev, select.firstChild);
+            selectEl.insertBefore(prev, selectEl.firstChild);
           }
 
-          select.value = currentValue;
+          selectEl.value = currentValue;
         } catch(e) {
           // parse error — keep fallback options
         }
@@ -95,8 +156,23 @@
       xhr.send();
     }
 
-    refreshBtn.addEventListener('click', function() { loadModels(true); });
-    loadModels(false);
+    claudeRefreshBtn.addEventListener('click', function() {
+      loadModels(claudeSelect, claudeLoading, claudeRefreshBtn, 'anthropic', true);
+    });
+    loadModels(claudeSelect, claudeLoading, claudeRefreshBtn, 'anthropic', false);
+
+    // ─── OpenAI model loader ───
+    var openaiSelect = document.getElementById('settings_openai_model');
+    var openaiRefreshBtn = document.getElementById('openai-model-refresh');
+    var openaiLoading = document.getElementById('openai-model-loading');
+
+    openaiRefreshBtn.addEventListener('click', function() {
+      loadModels(openaiSelect, openaiLoading, openaiRefreshBtn, 'openai', true);
+    });
+    // Auto-load if provider is openai
+    if (providerSelect.value === 'openai') {
+      loadModels(openaiSelect, openaiLoading, openaiRefreshBtn, 'openai', false);
+    }
   })();
   </script>
 

@@ -122,14 +122,29 @@ class ChatbotController < ApplicationController
 
   def create_new_chatbot
     settings = Setting.plugin_redmine_tx_mcp || {}
-    api_key = settings['claude_api_key'] || ENV['ANTHROPIC_API_KEY']
-    model = settings['claude_model'] || 'claude-sonnet-4-6'
+    provider = settings['llm_provider'] || 'anthropic'
 
-    unless api_key.present?
-      raise "Claude API key not configured. Please set it in MCP settings or ANTHROPIC_API_KEY environment variable."
+    if provider == 'openai'
+      endpoint_url = settings['openai_endpoint_url']
+      raise "OpenAI endpoint URL not configured." unless endpoint_url.present?
+
+      api_key = settings['openai_api_key'].presence  # Optional for local LLMs
+      model = settings['openai_model'] || 'default'
+
+      RedmineTxMcp::ClaudeChatbot.new(
+        api_key: api_key, model: model, project_id: @project.id,
+        provider: 'openai', endpoint_url: endpoint_url
+      )
+    else
+      api_key = settings['claude_api_key'] || ENV['ANTHROPIC_API_KEY']
+      model = settings['claude_model'] || 'claude-sonnet-4-6'
+
+      unless api_key.present?
+        raise "Claude API key not configured. Please set it in MCP settings or ANTHROPIC_API_KEY environment variable."
+      end
+
+      RedmineTxMcp::ClaudeChatbot.new(api_key: api_key, model: model, project_id: @project.id)
     end
-
-    RedmineTxMcp::ClaudeChatbot.new(api_key: api_key, model: model, project_id: @project.id)
   end
 
   def get_conversation_history(session_id)

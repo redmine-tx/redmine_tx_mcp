@@ -32,15 +32,30 @@ class McpAdminController < ApplicationController
 
   def models
     settings = Setting.plugin_redmine_tx_mcp || {}
-    api_key = settings['claude_api_key'].presence || ENV['ANTHROPIC_API_KEY']
-
-    unless api_key.present?
-      render json: { success: false, models: [], error: 'API key not configured' }
-      return
-    end
-
+    provider = params[:provider] || 'anthropic'
     force_refresh = params[:refresh] == '1'
-    models = RedmineTxMcp::AnthropicModelsService.fetch_models(force_refresh: force_refresh)
+
+    if provider == 'openai'
+      endpoint_url = settings['openai_endpoint_url']
+      unless endpoint_url.present?
+        render json: { success: false, models: [], error: 'OpenAI endpoint URL not configured' }
+        return
+      end
+
+      api_key = settings['openai_api_key'].presence
+      models = RedmineTxMcp::OpenaiModelsService.fetch_models(
+        endpoint_url: endpoint_url, api_key: api_key, force_refresh: force_refresh
+      )
+    else
+      api_key = settings['claude_api_key'].presence || ENV['ANTHROPIC_API_KEY']
+
+      unless api_key.present?
+        render json: { success: false, models: [], error: 'API key not configured' }
+        return
+      end
+
+      models = RedmineTxMcp::AnthropicModelsService.fetch_models(force_refresh: force_refresh)
+    end
 
     render json: { success: models.any?, models: models }
   rescue => e
