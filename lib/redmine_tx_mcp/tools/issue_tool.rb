@@ -360,148 +360,17 @@ module RedmineTxMcp
         # ─── Children Summary ───────────────────────────────
 
         def children_summary(args, chatbot: false)
-          parent = Issue.visible.find(args['parent_id'])
-          children = parent.children.visible.includes(:status, :tracker, :assigned_to, :priority).to_a
-
-          today = Date.today
-          grouped = {}
-          alerts = []
-
-          children.each do |child|
-            stage_name = get_stage_name(child)
-
-            # 완료된 일감, 비일정 리프(버그/예외)는 집계만, 개별 출력 제외
-            unless child.status.is_closed? || non_schedule_leaf?(child)
-              grouped[stage_name] ||= []
-              grouped[stage_name] << format_child_brief(child)
-            end
-
-            # Detect alerts (skip non-schedule leaves: bugs/exceptions)
-            unless non_schedule_leaf?(child)
-              if child.due_date && child.due_date < today && !child.status.is_closed?
-                alerts << { type: "overdue", issue_id: child.id, subject: child.subject, due_date: child.due_date.iso8601, days_overdue: (today - child.due_date).to_i }
-              end
-              if child.assigned_to.nil? && !child.status.is_closed?
-                alerts << { type: "unassigned", issue_id: child.id, subject: child.subject }
-              end
-              if !child.status.is_closed? && child.updated_on < (Time.now - 7.days)
-                alerts << { type: "stale", issue_id: child.id, subject: child.subject, days_since_update: ((Time.now - child.updated_on) / 1.day).to_i }
-              end
-            end
-          end
-
-          # Exclude non-schedule leaves (bugs/exceptions) from summary counts
-          schedule_children = children.reject { |c| non_schedule_leaf?(c) }
-          open_children = schedule_children.reject { |c| c.status.is_closed? }
-          closed_children = schedule_children.select { |c| c.status.is_closed? }
-          overdue_children = open_children.select { |c| c.due_date && c.due_date < today }
-
-          summary = {
-            total: schedule_children.size,
-            completed: closed_children.size,
-            in_progress: open_children.size,
-            overdue: overdue_children.size,
-            done_ratio: schedule_children.size > 0 ? (schedule_children.sum(&:done_ratio) / schedule_children.size.to_f).round(1) : 0,
-            estimated_hours: schedule_children.sum(&:estimated_hours).to_f
-          }
-          summary[:by_type] = build_type_breakdown(children) if Tracker.respond_to?(:is_bug?)
-
-          {
-            parent: format_issue_details(parent, chatbot: chatbot),
-            summary: summary,
-            children_by_stage: grouped,
-            alerts: alerts
-          }
-        rescue ActiveRecord::RecordNotFound
-          { error: "Issue not found" }
+          data = RedmineTxMilestone::SummaryService.children_summary(args['parent_id'])
+          return data if data[:error]
+          slim_children_summary(data)
         end
 
         # ─── Version Overview ───────────────────────────────
 
         def version_overview(args, chatbot: false)
-          version = Version.find(args['version_id'])
-          all_issues = version.fixed_issues.visible.includes(:status, :tracker, :assigned_to, :priority).to_a
-
-          # Separate parent issues (have children) and standalone issues
-          parent_issues = all_issues.select { |i| i.children.any? }
-          standalone_issues = all_issues.select { |i| i.parent_id.nil? && i.children.empty? }
-
-          today = Date.today
-          alerts = []
-          stage_counts = Hash.new(0)
-
-          parent_summaries = parent_issues.filter_map do |parent|
-            children = parent.children.visible.includes(:status, :assigned_to, :tracker).to_a
-            # Exclude non-schedule leaves (bugs/exceptions) from children counts
-            schedule_children = children.reject { |c| non_schedule_leaf?(c) }
-
-            stage_name = get_stage_name(parent)
-            stage_counts[stage_name] += 1
-
-            # 완료된 부모는 stage_counts만 반영, 상세 출력 제외
-            next if parent.status.is_closed?
-
-            open_children = schedule_children.reject { |c| c.status.is_closed? }
-            overdue_children = open_children.select { |c| c.due_date && c.due_date < today }
-
-            # Alerts
-            if overdue_children.any?
-              alerts << { type: "overdue_children", parent_id: parent.id, subject: parent.subject, overdue_count: overdue_children.size }
-            end
-            if !parent.status.is_closed? && parent.updated_on < (Time.now - 7.days)
-              alerts << { type: "stale", parent_id: parent.id, subject: parent.subject, days_since_update: ((Time.now - parent.updated_on) / 1.day).to_i }
-            end
-
-            parent_summary = {
-              id: parent.id,
-              subject: parent.subject,
-              tracker: parent.tracker.name,
-              assigned_to: parent.assigned_to ? parent.assigned_to.name : nil,
-              stage: stage_name,
-              done_ratio: parent.done_ratio,
-              children_total: schedule_children.size,
-              children_completed: schedule_children.count { |c| c.status.is_closed? },
-              children_in_progress: open_children.size,
-              children_overdue: overdue_children.size,
-              estimated_hours: schedule_children.sum(&:estimated_hours).to_f,
-              due_date: parent.due_date&.iso8601
-            }.merge(issue_tip_fields(parent))
-            parent_summary
-          end
-
-          # Include standalone issues in stage counts (exclude non-schedule leaves)
-          schedule_standalone = standalone_issues.reject { |i| non_schedule_leaf?(i) }
-          schedule_standalone.each { |i| stage_counts[get_stage_name(i)] += 1 }
-          standalone_open = schedule_standalone.reject { |i| i.status.is_closed? }
-
-          sorted_summaries = parent_summaries.sort_by { |p| [p[:children_overdue] > 0 ? 0 : 1, -(p[:children_total] - p[:children_completed])] }
-
-          # Chatbot mode: limit parent issues to reduce token usage
-          truncated_notice = nil
-          if chatbot && sorted_summaries.size > 30
-            truncated_notice = "Showing 30 of #{sorted_summaries.size} parent issues (sorted by priority). Use issue_children_summary for details on specific parents."
-            sorted_summaries = sorted_summaries.first(30)
-          end
-
-          result = {
-            version: {
-              id: version.id,
-              name: version.name,
-              status: version.status,
-              due_date: version.effective_date&.iso8601,
-              done_ratio: version.completed_percent,
-              overdue: version.overdue?,
-              total_issues: all_issues.size
-            },
-            parent_issues: sorted_summaries,
-            standalone_issues_count: standalone_open.size,
-            stage_summary: stage_counts,
-            alerts: alerts
-          }
-          result[:notice] = truncated_notice if truncated_notice
-          result
-        rescue ActiveRecord::RecordNotFound
-          { error: "Version not found" }
+          data = RedmineTxMilestone::SummaryService.version_overview(args['version_id'])
+          return data if data[:error]
+          slim_version_overview(data)
         end
 
         # ─── Bug Statistics ──────────────────────────────────
@@ -637,6 +506,80 @@ module RedmineTxMcp
           end
         end
 
+        # ─── Token reduction: SummaryService → LLM-friendly ─
+
+        # Flatten nested hashes to scalars, drop closed items and verbose fields
+        def slim_children_summary(data)
+          data[:parent] = slim_issue(data[:parent])
+
+          data[:children_by_stage] = data[:children_by_stage].each_with_object({}) do |(stage, children), h|
+            slimmed = children.reject { |c| c[:is_closed] }
+                              .map { |c| slim_child(c) }
+            h[stage] = slimmed if slimmed.any?
+          end
+
+          data[:alerts] = data[:alerts].map { |a| a.except(:assigned_to) }
+          data[:summary].delete(:spent_hours)
+          data
+        end
+
+        def slim_version_overview(data)
+          v = data[:version]
+          data[:version] = {
+            id: v[:id], name: v[:name], status: v[:status],
+            due_date: v[:due_date], done_ratio: v[:done_ratio],
+            overdue: v[:overdue], total_issues: v[:total_issues]
+          }
+
+          data[:parent_issues] = data[:parent_issues]
+            .reject { |p| p[:is_closed] }
+            .map { |p| slim_parent_summary(p) }
+
+          if data[:parent_issues].size > 30
+            data[:notice] = "Showing 30 of #{data[:parent_issues].size} parent issues (sorted by priority). Use issue_children_summary for details on specific parents."
+            data[:parent_issues] = data[:parent_issues].first(30)
+          end
+
+          data[:alerts] = data[:alerts].map { |a| a.except(:overdue_issues) }
+          data
+        end
+
+        def slim_issue(h)
+          {
+            id: h[:id], subject: h[:subject],
+            tracker: h.dig(:tracker, :name), status: h.dig(:status, :name),
+            stage: h.dig(:status, :stage_name), priority: h.dig(:priority, :name),
+            assigned_to: h.dig(:assigned_to, :name), fixed_version: h.dig(:fixed_version, :name),
+            start_date: h[:start_date], due_date: h[:due_date],
+            estimated_hours: h[:estimated_hours], spent_hours: h[:spent_hours],
+            done_ratio: h[:done_ratio],
+            tip_code: h.dig(:tip, :code)
+          }
+        end
+
+        def slim_child(h)
+          {
+            id: h[:id], subject: h[:subject],
+            tracker: h.dig(:tracker, :name), status: h.dig(:status, :name),
+            stage: h[:stage], assigned_to: h.dig(:assigned_to, :name),
+            done_ratio: h[:done_ratio], due_date: h[:due_date],
+            is_overdue: h[:is_overdue], estimated_hours: h[:estimated_hours],
+            tip_code: h.dig(:tip, :code)
+          }
+        end
+
+        def slim_parent_summary(h)
+          s = h[:children_stats] || {}
+          {
+            id: h[:id], subject: h[:subject],
+            tracker: h.dig(:tracker, :name), assigned_to: h.dig(:assigned_to, :name),
+            stage: h[:stage], done_ratio: h[:done_ratio], due_date: h[:due_date],
+            children_total: s[:total], children_completed: s[:completed],
+            children_in_progress: s[:in_progress], children_overdue: s[:overdue],
+            estimated_hours: s[:estimated_hours], tip_code: h.dig(:tip, :code)
+          }
+        end
+
         # ─── Helpers ────────────────────────────────────────
 
         def apply_sort(scope, sort_param)
@@ -684,35 +627,6 @@ module RedmineTxMcp
 
           code = issue.guide_tag
           { tip: issue.tip, tip_code: code&.to_s }
-        end
-
-        # 일정 관리 대상이 아닌 리프 노드 (버그/예외 트래커, 자식 없음)
-        def non_schedule_leaf?(issue)
-          return false unless Tracker.respond_to?(:is_bug?)
-          issue.children.empty? && (Tracker.is_bug?(issue.tracker_id) || Tracker.is_exception?(issue.tracker_id))
-        end
-
-        def build_type_breakdown(issues)
-          work = []; bug = []; sidejob = []; exception = []
-          issues.each do |i|
-            tid = i.tracker_id
-            if Tracker.is_bug?(tid)
-              bug << i
-            elsif Tracker.is_sidejob?(tid)
-              sidejob << i
-            elsif Tracker.is_exception?(tid)
-              exception << i
-            else
-              work << i
-            end
-          end
-          result = {}
-          { work: work, bug: bug, sidejob: sidejob, exception: exception }.each do |type, list|
-            next if list.empty?
-            closed = list.count { |i| i.status.is_closed? }
-            result[type] = { total: list.size, completed: closed, open: list.size - closed }
-          end
-          result
         end
 
         def format_child_brief(child)

@@ -1,4 +1,6 @@
 class ChatbotController < ApplicationController
+  include ActionController::Live
+
   before_action :require_login
   before_action :find_project
   skip_before_action :verify_authenticity_token, only: [:chat_submit]
@@ -16,10 +18,11 @@ class ChatbotController < ApplicationController
   def chat_submit
     unless acquire_chat_slot
       if wants_streaming?
-        self.response.headers['Content-Type'] = 'text/event-stream'
-        self.response.headers['Cache-Control'] = 'no-cache'
-        self.response_body = ["data: #{({ type: 'error', message: '서버가 바쁩니다. 잠시 후 다시 시도해주세요.' }).to_json}\n\n",
-                              "data: #{({ type: 'done' }).to_json}\n\n"]
+        response.headers['Content-Type'] = 'text/event-stream'
+        response.headers['Cache-Control'] = 'no-cache'
+        response.stream.write "data: #{({ type: 'error', message: '서버가 바쁩니다. 잠시 후 다시 시도해주세요.' }).to_json}\n\n"
+        response.stream.write "data: #{({ type: 'done' }).to_json}\n\n"
+        response.stream.close
       else
         render json: { error: "서버가 바쁩니다. 잠시 후 다시 시도해주세요." }, status: 429
       end
@@ -31,10 +34,11 @@ class ChatbotController < ApplicationController
     if message.blank?
       release_chat_slot
       if wants_streaming?
-        self.response.headers['Content-Type'] = 'text/event-stream'
-        self.response.headers['Cache-Control'] = 'no-cache'
-        self.response_body = ["data: #{({ type: 'error', message: 'Message cannot be empty' }).to_json}\n\n",
-                              "data: #{({ type: 'done' }).to_json}\n\n"]
+        response.headers['Content-Type'] = 'text/event-stream'
+        response.headers['Cache-Control'] = 'no-cache'
+        response.stream.write "data: #{({ type: 'error', message: 'Message cannot be empty' }).to_json}\n\n"
+        response.stream.write "data: #{({ type: 'done' }).to_json}\n\n"
+        response.stream.close
       else
         render json: { error: "Message cannot be empty" }, status: 400
       end
@@ -49,27 +53,27 @@ class ChatbotController < ApplicationController
     begin
       chatbot = get_or_create_chatbot
 
-      response = chatbot.chat(message, user: User.current)
+      result = chatbot.chat(message, user: User.current)
 
-      if response[:success]
-        session_id = session[session_key]
-        store_conversation_message(session_id, 'user', message)
-        store_conversation_message(session_id, 'assistant', response[:message])
+      if result[:success]
+        sid = session[session_key]
+        store_conversation_message(sid, 'user', message)
+        store_conversation_message(sid, 'assistant', result[:message])
 
         render json: {
           success: true,
-          message: response[:message],
-          conversation_id: response[:conversation_id]
+          message: result[:message],
+          conversation_id: result[:conversation_id]
         }
       else
         render json: {
           success: false,
-          error: response[:error]
+          error: result[:error]
         }, status: 500
       end
 
     rescue => e
-      Rails.logger.error "Chatbot Error: #{e.message}"
+      RedmineTxMcp::ChatbotLogger.log_error(context: "chat_submit (non-streaming)", error_class: e.class, message: e.message, backtrace: e.backtrace)
       render json: {
         success: false,
         error: "Sorry, I encountered an error. Please try again."
@@ -92,11 +96,11 @@ class ChatbotController < ApplicationController
   def acquire_chat_slot
     @@chat_mutex.synchronize do
       if @@active_chats >= MAX_CONCURRENT_CHATS
-        Rails.logger.warn "[Chatbot] Rejected request: #{@@active_chats}/#{MAX_CONCURRENT_CHATS} slots in use"
+        RedmineTxMcp::ChatbotLogger.log_info(context: "SLOT REJECTED", detail: "#{@@active_chats}/#{MAX_CONCURRENT_CHATS} slots in use")
         false
       else
         @@active_chats += 1
-        Rails.logger.info "[Chatbot] Acquired slot: #{@@active_chats}/#{MAX_CONCURRENT_CHATS}"
+        RedmineTxMcp::ChatbotLogger.log_info(context: "SLOT ACQUIRED", detail: "#{@@active_chats}/#{MAX_CONCURRENT_CHATS}")
         true
       end
     end
@@ -105,7 +109,7 @@ class ChatbotController < ApplicationController
   def release_chat_slot
     @@chat_mutex.synchronize do
       @@active_chats = [@@active_chats - 1, 0].max
-      Rails.logger.info "[Chatbot] Released slot: #{@@active_chats}/#{MAX_CONCURRENT_CHATS}"
+      RedmineTxMcp::ChatbotLogger.log_info(context: "SLOT RELEASED", detail: "#{@@active_chats}/#{MAX_CONCURRENT_CHATS}")
     end
   end
 
@@ -118,35 +122,43 @@ class ChatbotController < ApplicationController
   end
 
   def stream_chat_response(message)
-    session_id = session[session_key]
+    sid = session[session_key]
     chatbot = get_or_create_chatbot
     current_user = User.current
+    chatbot_session_id = chatbot.conversation_id
 
-    self.response.headers['Content-Type'] = 'text/event-stream'
-    self.response.headers['Cache-Control'] = 'no-cache'
-    self.response.headers['X-Accel-Buffering'] = 'no'
+    response.headers['Content-Type'] = 'text/event-stream'
+    response.headers['Cache-Control'] = 'no-cache'
+    response.headers['X-Accel-Buffering'] = 'no'
 
-    controller = self
-    self.response_body = Enumerator.new do |yielder|
-      final_message = nil
+    RedmineTxMcp::ChatbotLogger.log_stream_event(
+      event: :started, session_id: chatbot_session_id,
+      call_count: 1, pid: Process.pid, tid: Thread.current.object_id
+    )
 
-      begin
-        chatbot.chat_stream(message, user: current_user) do |event|
-          yielder << "data: #{event.to_json}\n\n"
-          final_message = event[:message] if event[:type] == 'answer'
-        end
+    final_message = nil
 
-        if final_message
-          store_conversation_message(session_id, 'user', message)
-          store_conversation_message(session_id, 'assistant', final_message)
-        end
-      rescue => e
-        Rails.logger.error "Stream Chat Error: #{e.class}: #{e.message}"
-        yielder << "data: #{({ type: 'error', message: e.message }).to_json}\n\n"
-        yielder << "data: #{({ type: 'done' }).to_json}\n\n"
-      ensure
-        controller.send(:release_chat_slot)
+    begin
+      chatbot.chat_stream(message, user: current_user) do |event|
+        response.stream.write "data: #{event.to_json}\n\n"
+        final_message = event[:message] if event[:type] == 'answer'
       end
+
+      if final_message
+        store_conversation_message(sid, 'user', message)
+        store_conversation_message(sid, 'assistant', final_message)
+      end
+    rescue => e
+      RedmineTxMcp::ChatbotLogger.log_error(session_id: chatbot_session_id, context: "stream_chat_response", error_class: e.class, message: e.message, backtrace: e.backtrace)
+      response.stream.write "data: #{({ type: 'error', message: e.message }).to_json}\n\n"
+      response.stream.write "data: #{({ type: 'done' }).to_json}\n\n"
+    ensure
+      release_chat_slot
+      RedmineTxMcp::ChatbotLogger.log_stream_event(
+        event: :finished, session_id: chatbot_session_id,
+        call_count: 1, pid: Process.pid, tid: Thread.current.object_id
+      )
+      response.stream.close
     end
   end
 

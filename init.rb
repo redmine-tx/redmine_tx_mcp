@@ -86,6 +86,7 @@ Users often refer to issues/versions/projects by title, not ID (e.g. "은하계 
 - Example: overdue open issues → `issue_list(project_id: X, is_overdue: true, sort: "due_date:asc")`
 
 ### Bug queries
+- **IMPORTANT: When the user mentions a version/sprint name (e.g. "0318", "Sprint 0318") in a bug query, you MUST first call `version_list(project_id, name: "0318")` to find the version_id, then pass it to `bug_statistics(project_id, version_id: <found_id>)`.** Without version_id, bug_statistics returns ALL bugs in the project, which is wrong when user asked about a specific milestone.
 - Bug dashboard for a project: `bug_statistics(project_id: 5)`
 - Bug dashboard scoped to a version/sprint: `bug_statistics(project_id: 5, version_id: 12)`
 - Bug trend over last 30 days: `bug_statistics(project_id: 5, days: 30)`

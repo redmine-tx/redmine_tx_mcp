@@ -17,7 +17,7 @@ module RedmineTxMcp
     TOOL_PROFILES = {
       version_progress: %w[version_list version_get version_overview version_statistics issue_children_summary],
       issue_search: %w[issue_list issue_get],
-      bug_analysis: %w[bug_statistics issue_list],
+      bug_analysis: %w[bug_statistics issue_list version_list],
       issue_management: %w[issue_create issue_update enum_statuses enum_trackers enum_priorities enum_categories],
       project_info: %w[project_list project_get],
       user_info: %w[user_list user_get],
@@ -96,12 +96,12 @@ module RedmineTxMcp
         while response['content'] && response['content'].any? { |c| c['type'] == 'tool_use' } && tool_call_depth < max_tool_calls
           tool_call_depth += 1
           @metrics[:tool_call_depth] = tool_call_depth
-          Rails.logger.info "Processing tool calls (depth: #{tool_call_depth}/#{max_tool_calls})..."
+          ChatbotLogger.log_info(session_id: conversation_id, context: "TOOL LOOP", detail: "depth: #{tool_call_depth}/#{max_tool_calls}")
           response = handle_tool_calls(response)
         end
 
         if tool_call_depth >= max_tool_calls
-          Rails.logger.warn "Max tool call depth (#{max_tool_calls}) reached, stopping recursion"
+          ChatbotLogger.log_info(session_id: conversation_id, context: "TOOL LOOP", detail: "MAX DEPTH #{max_tool_calls} reached, stopping")
         end
 
         # Extract assistant response
@@ -128,8 +128,7 @@ module RedmineTxMcp
         }
 
       rescue => e
-        Rails.logger.error "Claude Chatbot Error: #{e.message}"
-        Rails.logger.error e.backtrace.join("\n")
+        ChatbotLogger.log_error(session_id: conversation_id, context: "chat", error_class: e.class, message: e.message, backtrace: e.backtrace)
 
         log_session_summary(session_start)
 
@@ -257,8 +256,7 @@ module RedmineTxMcp
         { success: true, message: assistant_message, conversation_id: conversation_id }
 
       rescue => e
-        Rails.logger.error "Claude Chatbot Stream Error: #{e.message}"
-        Rails.logger.error e.backtrace.join("\n")
+        ChatbotLogger.log_error(session_id: conversation_id, context: "chat_stream", error_class: e.class, message: e.message, backtrace: e.backtrace)
 
         log_session_summary(session_start)
 
@@ -418,13 +416,12 @@ module RedmineTxMcp
       request['anthropic-version'] = '2023-06-01'
       request.body = JSON.generate(request_body)
 
-      Rails.logger.debug "Claude API Request: #{request_body.inspect}"
+      # API request debug logging omitted (verbose)
 
       response = http.request(request)
 
       unless response.code == '200'
-        Rails.logger.error "Claude API Error: #{response.code} - #{response.body}"
-        Rails.logger.error "Request body: #{JSON.pretty_generate(request_body)}"
+        ChatbotLogger.log_error(session_id: conversation_id, context: "Claude API HTTP #{response.code}", error_class: "HttpError", message: response.body.to_s[0..500])
         raise "Claude API Error: #{response.code} - #{response.body}"
       end
 
@@ -432,7 +429,7 @@ module RedmineTxMcp
     end
 
     def call_openai_api(request_body, &on_chunk)
-      Rails.logger.debug "OpenAI-compatible API Request: #{request_body.inspect}"
+      # OpenAI request debug logging omitted (verbose)
       if block_given?
         OpenaiAdapter.call_streaming(request_body, api_key: @api_key, endpoint_url: @endpoint_url, &on_chunk)
       else
@@ -450,12 +447,8 @@ module RedmineTxMcp
             tool_name = content['name']
             tool_input = content['input']
 
-            Rails.logger.info "Executing tool: #{tool_name} with input: #{tool_input.inspect}"
-
-            # Execute the tool
+            # Execute the tool (logging handled by execute_mcp_tool -> ChatbotLogger.log_tool_execution)
             result = execute_mcp_tool(tool_name, tool_input)
-
-            Rails.logger.info "Tool result: #{result.inspect}"
 
             tool_results << {
               type: 'tool_result',
@@ -467,8 +460,6 @@ module RedmineTxMcp
 
         # If we had tool calls, make another API call with the results
         if tool_results.any?
-          Rails.logger.info "Making follow-up API call with tool results..."
-
           # Layer 1: Store truncated results in history, use full results for current call
           truncated_results = truncate_tool_results(tool_results)
 
@@ -494,15 +485,12 @@ module RedmineTxMcp
             tools: available_mcp_tools
           }
 
-          final_response = call_claude_api(request_body)
-          Rails.logger.info "Follow-up API call completed"
-          final_response
+          call_claude_api(request_body)
         else
           response
         end
       rescue => e
-        Rails.logger.error "Error in handle_tool_calls: #{e.message}"
-        Rails.logger.error e.backtrace.join("\n")
+        ChatbotLogger.log_error(session_id: conversation_id, context: "handle_tool_calls", error_class: e.class, message: e.message, backtrace: e.backtrace)
 
         # Return a fallback response
         {
@@ -558,8 +546,7 @@ module RedmineTxMcp
 
       result
     rescue => e
-      Rails.logger.error "MCP Tool execution error: #{e.message}"
-      Rails.logger.error e.backtrace.join("\n")
+      ChatbotLogger.log_error(session_id: conversation_id, context: "execute_mcp_tool(#{tool_name})", error_class: e.class, message: e.message, backtrace: e.backtrace)
       { error: "Tool execution failed: #{e.message}" }
     end
 
@@ -569,7 +556,7 @@ module RedmineTxMcp
       text_parts = response['content'].select { |c| c['type'] == 'text' }
       result = text_parts.map { |part| part['text'] }.join("\n").strip
 
-      Rails.logger.info "Extracted text content: #{result[0...200]}#{'...' if result.length > 200}"
+      # extracted text logged via log_assistant_response
       result
     end
 
@@ -589,7 +576,7 @@ module RedmineTxMcp
           content: formatted_content
         }
       else
-        Rails.logger.warn "Invalid role '#{role}' in conversation. Skipping."
+        ChatbotLogger.log_info(session_id: conversation_id, context: "WARN", detail: "Invalid role '#{role}' in conversation, skipping")
       end
     end
 
@@ -730,7 +717,7 @@ module RedmineTxMcp
       @metrics[:last_budget_message_count] = result.size
 
       if result.size < messages.size
-        Rails.logger.info "[ClaudeChatbot] Budget trimmed history: #{messages.size} -> #{result.size} messages (#{MAX_HISTORY_CHARS} char budget)"
+        ChatbotLogger.log_info(session_id: conversation_id, context: "BUDGET TRIM", detail: "#{messages.size} → #{result.size} messages (#{MAX_HISTORY_CHARS} char budget)")
       end
 
       result
@@ -762,12 +749,12 @@ module RedmineTxMcp
 
       unless matched_any
         @selected_tool_names = nil  # fallback: use all tools
-        Rails.logger.info "[ClaudeChatbot] No keyword match, using all #{all_mcp_tools.size} tools"
+        ChatbotLogger.log_info(session_id: conversation_id, context: "TOOL SELECT", detail: "no keyword match, using all #{all_mcp_tools.size} tools")
         return
       end
 
       @selected_tool_names = matched_tools.to_a
-      Rails.logger.info "[ClaudeChatbot] Selected #{@selected_tool_names.size} tools: #{@selected_tool_names.join(', ')}"
+      ChatbotLogger.log_info(session_id: conversation_id, context: "TOOL SELECT", detail: "#{@selected_tool_names.size} tools: #{@selected_tool_names.join(', ')}")
     end
 
     # ─── Conversation history cleaning ───────────────────────────
@@ -818,7 +805,7 @@ module RedmineTxMcp
             validated << msg
           else
             # Orphaned tool_result — skip it
-            Rails.logger.warn "[ClaudeChatbot] Dropping orphaned tool_result message"
+            ChatbotLogger.log_info(session_id: conversation_id, context: "WARN", detail: "Dropping orphaned tool_result message")
           end
         elsif msg[:role] == 'assistant' && msg[:content].is_a?(Array)
           # tool_use — only keep if next message will be tool_result (we check later)

@@ -85,6 +85,39 @@ module RedmineTxMcp
         Rails.logger.warn "[ChatbotLogger] Failed to log session summary: #{e.message}"
       end
 
+      def log_stream_event(data)
+        lines = []
+        lines << "[#{timestamp}] --- STREAM #{data[:event].to_s.upcase} ---"
+        lines << "session: #{data[:session_id]} | enum_call: ##{data[:call_count]} | PID: #{data[:pid]} | TID: #{data[:tid]}"
+        lines << data[:detail].to_s if data[:detail].present?
+        lines << ""
+        logger.info(lines.join("\n"))
+      rescue => e
+        Rails.logger.warn "[ChatbotLogger] Failed to log stream event: #{e.message}"
+      end
+
+      def log_error(data)
+        lines = []
+        lines << "[#{timestamp}] !!! ERROR !!!"
+        lines << "session: #{data[:session_id]} | context: #{data[:context]}"
+        lines << "#{data[:error_class]}: #{data[:message]}"
+        lines << data[:backtrace].first(10).join("\n") if data[:backtrace]
+        lines << ""
+        logger.error(lines.join("\n"))
+      rescue => e
+        Rails.logger.warn "[ChatbotLogger] Failed to log error: #{e.message}"
+      end
+
+      def log_info(data)
+        lines = []
+        lines << "[#{timestamp}] #{data[:context]}"
+        lines << "session: #{data[:session_id]}" if data[:session_id]
+        lines << data[:detail].to_s if data[:detail].present?
+        logger.info(lines.join("\n"))
+      rescue => e
+        Rails.logger.warn "[ChatbotLogger] Failed to log info: #{e.message}"
+      end
+
       private
 
       def timestamp
