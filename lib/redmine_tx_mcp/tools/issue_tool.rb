@@ -376,30 +376,33 @@ module RedmineTxMcp
               grouped[stage_name] << format_child_brief(child)
             end
 
-            # Detect alerts
-            if child.due_date && child.due_date < today && !child.status.is_closed?
-              alerts << { type: "overdue", issue_id: child.id, subject: child.subject, due_date: child.due_date.iso8601, days_overdue: (today - child.due_date).to_i }
-            end
-            if child.assigned_to.nil? && !child.status.is_closed?
-              alerts << { type: "unassigned", issue_id: child.id, subject: child.subject }
-            end
-            if !child.status.is_closed? && child.updated_on < (Time.now - 7.days)
-              alerts << { type: "stale", issue_id: child.id, subject: child.subject, days_since_update: ((Time.now - child.updated_on) / 1.day).to_i }
+            # Detect alerts (skip non-schedule leaves: bugs/exceptions)
+            unless non_schedule_leaf?(child)
+              if child.due_date && child.due_date < today && !child.status.is_closed?
+                alerts << { type: "overdue", issue_id: child.id, subject: child.subject, due_date: child.due_date.iso8601, days_overdue: (today - child.due_date).to_i }
+              end
+              if child.assigned_to.nil? && !child.status.is_closed?
+                alerts << { type: "unassigned", issue_id: child.id, subject: child.subject }
+              end
+              if !child.status.is_closed? && child.updated_on < (Time.now - 7.days)
+                alerts << { type: "stale", issue_id: child.id, subject: child.subject, days_since_update: ((Time.now - child.updated_on) / 1.day).to_i }
+              end
             end
           end
 
-          open_children = children.reject { |c| c.status.is_closed? }
-          closed_children = children.select { |c| c.status.is_closed? }
+          # Exclude non-schedule leaves (bugs/exceptions) from summary counts
+          schedule_children = children.reject { |c| non_schedule_leaf?(c) }
+          open_children = schedule_children.reject { |c| c.status.is_closed? }
+          closed_children = schedule_children.select { |c| c.status.is_closed? }
           overdue_children = open_children.select { |c| c.due_date && c.due_date < today }
 
           summary = {
-            total: children.size,
+            total: schedule_children.size,
             completed: closed_children.size,
             in_progress: open_children.size,
             overdue: overdue_children.size,
-            done_ratio: children.size > 0 ? (children.sum(&:done_ratio) / children.size.to_f).round(1) : 0,
-            estimated_hours: children.sum(&:estimated_hours).to_f,
-            spent_hours: children.sum(&:spent_hours).to_f
+            done_ratio: schedule_children.size > 0 ? (schedule_children.sum(&:done_ratio) / schedule_children.size.to_f).round(1) : 0,
+            estimated_hours: schedule_children.sum(&:estimated_hours).to_f
           }
           summary[:by_type] = build_type_breakdown(children) if Tracker.respond_to?(:is_bug?)
 
@@ -428,7 +431,9 @@ module RedmineTxMcp
           stage_counts = Hash.new(0)
 
           parent_summaries = parent_issues.filter_map do |parent|
-            children = parent.children.visible.includes(:status, :assigned_to).to_a
+            children = parent.children.visible.includes(:status, :assigned_to, :tracker).to_a
+            # Exclude non-schedule leaves (bugs/exceptions) from children counts
+            schedule_children = children.reject { |c| non_schedule_leaf?(c) }
 
             stage_name = get_stage_name(parent)
             stage_counts[stage_name] += 1
@@ -436,7 +441,7 @@ module RedmineTxMcp
             # 완료된 부모는 stage_counts만 반영, 상세 출력 제외
             next if parent.status.is_closed?
 
-            open_children = children.reject { |c| c.status.is_closed? }
+            open_children = schedule_children.reject { |c| c.status.is_closed? }
             overdue_children = open_children.select { |c| c.due_date && c.due_date < today }
 
             # Alerts
@@ -454,21 +459,20 @@ module RedmineTxMcp
               assigned_to: parent.assigned_to ? parent.assigned_to.name : nil,
               stage: stage_name,
               done_ratio: parent.done_ratio,
-              children_total: children.size,
-              children_completed: children.count { |c| c.status.is_closed? },
+              children_total: schedule_children.size,
+              children_completed: schedule_children.count { |c| c.status.is_closed? },
               children_in_progress: open_children.size,
               children_overdue: overdue_children.size,
-              estimated_hours: children.sum(&:estimated_hours).to_f,
-              spent_hours: children.sum(&:spent_hours).to_f,
+              estimated_hours: schedule_children.sum(&:estimated_hours).to_f,
               due_date: parent.due_date&.iso8601
             }.merge(issue_tip_fields(parent))
-            parent_summary[:children_by_type] = build_type_breakdown(children) if Tracker.respond_to?(:is_bug?)
             parent_summary
           end
 
-          # Include standalone issues in stage counts
-          standalone_issues.each { |i| stage_counts[get_stage_name(i)] += 1 }
-          standalone_open = standalone_issues.reject { |i| i.status.is_closed? || non_schedule_leaf?(i) }
+          # Include standalone issues in stage counts (exclude non-schedule leaves)
+          schedule_standalone = standalone_issues.reject { |i| non_schedule_leaf?(i) }
+          schedule_standalone.each { |i| stage_counts[get_stage_name(i)] += 1 }
+          standalone_open = schedule_standalone.reject { |i| i.status.is_closed? }
 
           sorted_summaries = parent_summaries.sort_by { |p| [p[:children_overdue] > 0 ? 0 : 1, -(p[:children_total] - p[:children_completed])] }
 
@@ -722,8 +726,7 @@ module RedmineTxMcp
             done_ratio: child.done_ratio,
             due_date: child.due_date&.iso8601,
             is_overdue: child.due_date && child.due_date < Date.today && !child.status.is_closed?,
-            estimated_hours: child.estimated_hours,
-            spent_hours: child.spent_hours
+            estimated_hours: child.estimated_hours
           }.merge(issue_tip_fields(child))
         end
 

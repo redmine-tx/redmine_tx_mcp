@@ -65,13 +65,7 @@ module RedmineTxMcp
       end
 
       def handle_list_tools(request)
-        tools = [
-          RedmineTxMcp::Tools::IssueTool,
-          RedmineTxMcp::Tools::ProjectTool,
-          RedmineTxMcp::Tools::UserTool,
-          RedmineTxMcp::Tools::VersionTool,
-          RedmineTxMcp::Tools::EnumerationTool
-        ].flat_map(&:available_tools)
+        tools = tool_classes.flat_map(&:available_tools)
 
         {
           jsonrpc: "2.0",
@@ -88,22 +82,14 @@ module RedmineTxMcp
 
         @logger.debug "Calling tool: #{tool_name} with args: #{arguments.inspect}"
 
-        result = case tool_name
-                when "version_overview", "bug_statistics"
-                  RedmineTxMcp::Tools::IssueTool.call_tool(tool_name, arguments)
-                when /^issue_/
-                  RedmineTxMcp::Tools::IssueTool.call_tool(tool_name, arguments)
-                when /^project_/
-                  RedmineTxMcp::Tools::ProjectTool.call_tool(tool_name, arguments)
-                when /^user_/
-                  RedmineTxMcp::Tools::UserTool.call_tool(tool_name, arguments)
-                when /^version_/
-                  RedmineTxMcp::Tools::VersionTool.call_tool(tool_name, arguments)
-                when /^enum_/
-                  RedmineTxMcp::Tools::EnumerationTool.call_tool(tool_name, arguments)
-                else
-                  { error: "Unknown tool: #{tool_name}" }
-                end
+        # Find the tool class that handles this tool name
+        klass = tool_classes.find { |k| k.available_tools.any? { |t| t[:name] == tool_name } }
+
+        result = if klass
+          klass.call_tool(tool_name, arguments)
+        else
+          { error: "Unknown tool: #{tool_name}" }
+        end
 
         {
           jsonrpc: "2.0",
@@ -112,7 +98,7 @@ module RedmineTxMcp
             content: [
               {
                 type: "text",
-                text: result.is_a?(Hash) && result[:error] ? result[:error] : JSON.pretty_generate(result)
+                text: result.is_a?(Hash) && result[:error] ? result[:error] : RedmineTxMcp::LlmFormatEncoder.encode(result)
               }
             ]
           }
@@ -134,6 +120,16 @@ module RedmineTxMcp
 
       def handle_read_resource(request)
         create_error_response("Resource not found", request['id'])
+      end
+
+      def tool_classes
+        %w[
+          RedmineTxMcp::Tools::IssueTool
+          RedmineTxMcp::Tools::ProjectTool
+          RedmineTxMcp::Tools::UserTool
+          RedmineTxMcp::Tools::VersionTool
+          RedmineTxMcp::Tools::EnumerationTool
+        ].map(&:constantize)
       end
 
       def create_error_response(message, id = nil)

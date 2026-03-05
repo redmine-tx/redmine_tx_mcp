@@ -12,8 +12,6 @@ options 'mcp/http', to: 'mcp_http#options'
 
 get 'mcp_admin', to: 'mcp_admin#index'
 get 'mcp_admin/index', to: 'mcp_admin#index'
-get 'mcp_admin/settings', to: 'mcp_admin#settings'
-post 'mcp_admin/update_settings', to: 'mcp_admin#update_settings'
 get 'mcp_admin/models', to: 'mcp_admin#models'
 
 # Project-specific chatbot

@@ -1,9 +1,7 @@
 require 'net/http'
 require 'json'
 require 'uri'
-require_relative 'tools/base_tool'
-require_relative 'tools/issue_tool'
-require_relative 'tools/project_tool'
+# Tool classes are loaded by init.rb (to_prepare block handles dev-mode reloading)
 
 module RedmineTxMcp
   class ClaudeChatbot
@@ -60,6 +58,12 @@ module RedmineTxMcp
       reset_metrics
 
       begin
+        ChatbotLogger.log_user_query(
+          session_id: conversation_id,
+          user_name: User.current&.name || 'Anonymous',
+          message: user_message
+        )
+
         # Add user message to conversation
         add_to_conversation('user', user_message)
 
@@ -110,6 +114,11 @@ module RedmineTxMcp
 
         add_to_conversation('assistant', assistant_message)
 
+        ChatbotLogger.log_assistant_response(
+          session_id: conversation_id,
+          message: assistant_message
+        )
+
         log_session_summary(session_start)
 
         {
@@ -138,6 +147,12 @@ module RedmineTxMcp
       reset_metrics
 
       begin
+        ChatbotLogger.log_user_query(
+          session_id: conversation_id,
+          user_name: User.current&.name || 'Anonymous',
+          message: user_message
+        )
+
         add_to_conversation('user', user_message)
 
         # Layer 4: Select tools based on user query keywords
@@ -186,7 +201,7 @@ module RedmineTxMcp
             tool_results << {
               type: 'tool_result',
               tool_use_id: content['id'],
-              content: result.is_a?(String) ? result : JSON.generate(result)
+              content: result.is_a?(String) ? result : RedmineTxMcp::LlmFormatEncoder.encode(result)
             }
           end
 
@@ -228,6 +243,11 @@ module RedmineTxMcp
         assistant_message = "죄송합니다. 응답을 생성하는 중 문제가 발생했습니다." if assistant_message.blank?
 
         add_to_conversation('assistant', assistant_message)
+
+        ChatbotLogger.log_assistant_response(
+          session_id: conversation_id,
+          message: assistant_message
+        )
 
         log_session_summary(session_start)
 
@@ -283,17 +303,21 @@ module RedmineTxMcp
     end
 
     # All tool classes available to the chatbot
-    TOOL_CLASSES = [
-      RedmineTxMcp::Tools::IssueTool,
-      RedmineTxMcp::Tools::ProjectTool,
-      RedmineTxMcp::Tools::UserTool,
-      RedmineTxMcp::Tools::VersionTool,
+    TOOL_CLASS_NAMES = %w[
+      RedmineTxMcp::Tools::IssueTool
+      RedmineTxMcp::Tools::ProjectTool
+      RedmineTxMcp::Tools::UserTool
+      RedmineTxMcp::Tools::VersionTool
       RedmineTxMcp::Tools::EnumerationTool
     ].freeze
 
+    def tool_classes
+      TOOL_CLASS_NAMES.map(&:constantize)
+    end
+
     # Full tool definitions (memoized)
     def all_mcp_tools
-      @all_mcp_tools ||= TOOL_CLASSES.flat_map { |klass|
+      @all_mcp_tools ||= tool_classes.flat_map { |klass|
         klass.available_tools.map { |tool|
           schema = deep_dup(tool[:inputSchema] || tool[:input_schema] || { type: "object", properties: {} })
           sanitize_schema!(schema)
@@ -434,7 +458,7 @@ module RedmineTxMcp
             tool_results << {
               type: 'tool_result',
               tool_use_id: content['id'],
-              content: result.is_a?(String) ? result : JSON.generate(result)
+              content: result.is_a?(String) ? result : RedmineTxMcp::LlmFormatEncoder.encode(result)
             }
           end
         end
@@ -495,7 +519,7 @@ module RedmineTxMcp
       tool_start = Process.clock_gettime(Process::CLOCK_MONOTONIC)
 
       # Find the tool class that handles this tool
-      klass = TOOL_CLASSES.find { |k| k.available_tools.any? { |t| t[:name] == tool_name } }
+      klass = tool_classes.find { |k| k.available_tools.any? { |t| t[:name] == tool_name } }
 
       result = if klass
         # Convert symbol keys to string keys for consistency
@@ -514,7 +538,7 @@ module RedmineTxMcp
       end
 
       duration_ms = ((Process.clock_gettime(Process::CLOCK_MONOTONIC) - tool_start) * 1000).round
-      result_str = result.is_a?(String) ? result : JSON.generate(result)
+      result_str = result.is_a?(String) ? result : RedmineTxMcp::LlmFormatEncoder.encode(result)
 
       # Calculate what the truncated size would be (for logging)
       truncated_str = truncate_tool_result(result_str)
@@ -524,6 +548,7 @@ module RedmineTxMcp
       ChatbotLogger.log_tool_execution(
         tool_name: tool_name,
         tool_input: tool_input.inspect,
+        result_text: result_str,
         result_chars: result_str.length,
         truncated_chars: truncated_chars,
         duration_ms: duration_ms

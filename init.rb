@@ -3,6 +3,7 @@ require 'net/http'
 require 'uri'
 
 $LOAD_PATH.unshift File.realpath("#{File.dirname(__FILE__)}/lib")
+require "redmine_tx_mcp/llm_format_encoder"
 require "redmine_tx_mcp/mcp_server"
 require "redmine_tx_mcp/http_mcp_server"
 require "redmine_tx_mcp/tools/base_tool"
@@ -15,6 +16,32 @@ require "redmine_tx_mcp/anthropic_models_service"
 require "redmine_tx_mcp/openai_adapter"
 require "redmine_tx_mcp/openai_models_service"
 require "redmine_tx_mcp/chatbot_logger"
+require "redmine_tx_mcp/claude_chatbot"
+
+# Ensure plugin lib files are reloaded in Rails development mode.
+# In production, to_prepare runs once (same as require). In development,
+# it runs before each request after code changes, ensuring constants
+# cleared by Rails autoloader are re-established.
+Rails.application.config.to_prepare do
+  plugin_lib = File.realpath(File.expand_path('lib', __dir__))
+  # Load in dependency order — base_tool before its subclasses
+  %w[
+    redmine_tx_mcp/llm_format_encoder
+    redmine_tx_mcp/tools/base_tool
+    redmine_tx_mcp/tools/issue_tool
+    redmine_tx_mcp/tools/project_tool
+    redmine_tx_mcp/tools/user_tool
+    redmine_tx_mcp/tools/version_tool
+    redmine_tx_mcp/tools/enumeration_tool
+    redmine_tx_mcp/openai_adapter
+    redmine_tx_mcp/chatbot_logger
+    redmine_tx_mcp/claude_chatbot
+    redmine_tx_mcp/mcp_server
+    redmine_tx_mcp/http_mcp_server
+  ].each do |f|
+    load File.join(plugin_lib, "#{f}.rb")
+  end
+end
 
 Redmine::Plugin.register :redmine_tx_mcp do
   name "Redmine TX MCP Plugin"
@@ -136,13 +163,13 @@ PROMPT
 
   project_module :redmine_tx_mcp do
     permission :use_mcp_api, { mcp: [:index, :call_tool, :list_tools, :get_tool] }
-    permission :admin_mcp, { mcp_admin: [:index, :settings, :update_settings, :models] }
+    permission :admin_mcp, { mcp_admin: [:index, :models] }
     permission :use_chatbot, { chatbot: [:index, :chat_submit, :reset] }
   end
 
-  menu :admin_menu, :mcp_settings, {
+  menu :admin_menu, :mcp_status, {
     controller: "mcp_admin", action: "index"
-  }, caption: "MCP Settings"
+  }, caption: "MCP Status", icon: "server-authentication"
 
   menu :project_menu, :claude_chatbot, {
     controller: "chatbot", action: "index"

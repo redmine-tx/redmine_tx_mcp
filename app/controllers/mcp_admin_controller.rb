@@ -22,14 +22,6 @@ class McpAdminController < ApplicationController
     end
   end
 
-  def settings
-    @settings = Setting.plugin_redmine_tx_mcp || {}
-  rescue => e
-    logger.error "MCP Settings access error: #{e.message}"
-    STDERR.puts "MCP Settings access error: #{e.message}"
-    @settings = {}
-  end
-
   def models
     settings = Setting.plugin_redmine_tx_mcp || {}
     provider = params[:provider] || 'anthropic'
@@ -62,21 +54,6 @@ class McpAdminController < ApplicationController
   rescue => e
     logger.error "[McpAdmin#models] #{e.class}: #{e.message}"
     render json: { success: false, models: [], error: e.message }
-  end
-
-  def update_settings
-    settings = params[:settings] || {}
-
-    # Validate settings
-    if settings[:enabled] == '1' && settings[:api_key].blank?
-      flash[:error] = "API Key is required when MCP is enabled"
-      redirect_to mcp_admin_settings_path
-      return
-    end
-
-    Setting.plugin_redmine_tx_mcp = settings
-    flash[:notice] = "MCP settings updated successfully"
-    redirect_to mcp_admin_index_path
   end
 
   private
