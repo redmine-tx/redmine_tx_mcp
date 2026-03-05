@@ -3,15 +3,33 @@ class ChatbotController < ApplicationController
   before_action :find_project
   skip_before_action :verify_authenticity_token, only: [:chat_submit]
 
+  # Concurrency guard — prevent chatbot from consuming all Puma/Passenger workers
+  MAX_CONCURRENT_CHATS = 2
+  @@chat_mutex = Mutex.new
+  @@active_chats = 0
+
   def index
     @chatbot_session_id = session[session_key] ||= SecureRandom.hex(8)
     @conversation_history = get_conversation_history(@chatbot_session_id)
   end
 
   def chat_submit
+    unless acquire_chat_slot
+      if wants_streaming?
+        self.response.headers['Content-Type'] = 'text/event-stream'
+        self.response.headers['Cache-Control'] = 'no-cache'
+        self.response_body = ["data: #{({ type: 'error', message: '서버가 바쁩니다. 잠시 후 다시 시도해주세요.' }).to_json}\n\n",
+                              "data: #{({ type: 'done' }).to_json}\n\n"]
+      else
+        render json: { error: "서버가 바쁩니다. 잠시 후 다시 시도해주세요." }, status: 429
+      end
+      return
+    end
+
     message = params[:message]
 
     if message.blank?
+      release_chat_slot
       if wants_streaming?
         self.response.headers['Content-Type'] = 'text/event-stream'
         self.response.headers['Cache-Control'] = 'no-cache'
@@ -56,6 +74,8 @@ class ChatbotController < ApplicationController
         success: false,
         error: "Sorry, I encountered an error. Please try again."
       }, status: 500
+    ensure
+      release_chat_slot
     end
   end
 
@@ -68,6 +88,26 @@ class ChatbotController < ApplicationController
   end
 
   private
+
+  def acquire_chat_slot
+    @@chat_mutex.synchronize do
+      if @@active_chats >= MAX_CONCURRENT_CHATS
+        Rails.logger.warn "[Chatbot] Rejected request: #{@@active_chats}/#{MAX_CONCURRENT_CHATS} slots in use"
+        false
+      else
+        @@active_chats += 1
+        Rails.logger.info "[Chatbot] Acquired slot: #{@@active_chats}/#{MAX_CONCURRENT_CHATS}"
+        true
+      end
+    end
+  end
+
+  def release_chat_slot
+    @@chat_mutex.synchronize do
+      @@active_chats = [@@active_chats - 1, 0].max
+      Rails.logger.info "[Chatbot] Released slot: #{@@active_chats}/#{MAX_CONCURRENT_CHATS}"
+    end
+  end
 
   def session_key
     :"chatbot_session_#{@project.id}"
@@ -86,6 +126,7 @@ class ChatbotController < ApplicationController
     self.response.headers['Cache-Control'] = 'no-cache'
     self.response.headers['X-Accel-Buffering'] = 'no'
 
+    controller = self
     self.response_body = Enumerator.new do |yielder|
       final_message = nil
 
@@ -103,6 +144,8 @@ class ChatbotController < ApplicationController
         Rails.logger.error "Stream Chat Error: #{e.class}: #{e.message}"
         yielder << "data: #{({ type: 'error', message: e.message }).to_json}\n\n"
         yielder << "data: #{({ type: 'done' }).to_json}\n\n"
+      ensure
+        controller.send(:release_chat_slot)
       end
     end
   end

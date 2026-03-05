@@ -28,7 +28,7 @@
     </div>
 
     <div class="chat-input-container">
-      <%= form_with url: chat_submit_chatbot_path(@project), remote: true, local: false,
+      <%= form_with url: chat_submit_chatbot_path(@project), local: true,
                    html: { id: 'chat-form', class: 'chat-form' } do |form| %>
         <div class="input-group">
           <%= form.text_area :message, placeholder: "Ask me anything about this project...",

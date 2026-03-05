@@ -217,7 +217,7 @@ module RedmineTxMcp
             statistics: {
               total_issues: issues.count,
               open_issues: issues.open.count,
-              closed_issues: issues.closed.count,
+              closed_issues: issues.where(status_id: IssueStatus.where(is_closed: true).pluck(:id)).count,
               estimated_hours: issues.sum(:estimated_hours) || 0,
               spent_hours: issues.joins(:time_entries).sum(:hours) || 0,
               done_ratio: version.completed_percent,

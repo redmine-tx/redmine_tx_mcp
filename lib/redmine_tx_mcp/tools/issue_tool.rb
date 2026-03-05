@@ -361,7 +361,7 @@ module RedmineTxMcp
 
         def children_summary(args, chatbot: false)
           parent = Issue.visible.find(args['parent_id'])
-          children = parent.children.visible.includes(:status, :tracker, :assigned_to, :priority, :children).to_a
+          children = parent.children.visible.includes(:status, :tracker, :assigned_to, :priority).to_a
 
           today = Date.today
           grouped = {}
@@ -420,7 +420,7 @@ module RedmineTxMcp
 
         def version_overview(args, chatbot: false)
           version = Version.find(args['version_id'])
-          all_issues = version.fixed_issues.visible.includes(:status, :tracker, :assigned_to, :priority, :children).to_a
+          all_issues = version.fixed_issues.visible.includes(:status, :tracker, :assigned_to, :priority).to_a
 
           # Separate parent issues (have children) and standalone issues
           parent_issues = all_issues.select { |i| i.children.any? }

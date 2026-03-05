@@ -409,6 +409,8 @@ module RedmineTxMcp
       uri = URI(CLAUDE_API_URL)
       http = Net::HTTP.new(uri.host, uri.port)
       http.use_ssl = true
+      http.open_timeout = 30
+      http.read_timeout = 300
 
       request = Net::HTTP::Post.new(uri)
       request['Content-Type'] = 'application/json'
