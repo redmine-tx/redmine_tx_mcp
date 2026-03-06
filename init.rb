@@ -2,29 +2,17 @@ require 'json'
 require 'net/http'
 require 'uri'
 
-$LOAD_PATH.unshift File.realpath("#{File.dirname(__FILE__)}/lib")
-require "redmine_tx_mcp/llm_format_encoder"
-require "redmine_tx_mcp/mcp_server"
-require "redmine_tx_mcp/http_mcp_server"
-require "redmine_tx_mcp/tools/base_tool"
-require "redmine_tx_mcp/tools/issue_tool"
-require "redmine_tx_mcp/tools/project_tool"
-require "redmine_tx_mcp/tools/user_tool"
-require "redmine_tx_mcp/tools/version_tool"
-require "redmine_tx_mcp/tools/enumeration_tool"
-require "redmine_tx_mcp/anthropic_models_service"
-require "redmine_tx_mcp/openai_adapter"
-require "redmine_tx_mcp/openai_models_service"
-require "redmine_tx_mcp/chatbot_logger"
-require "redmine_tx_mcp/claude_chatbot"
-require "redmine_tx_mcp/llm_service"
+# Use realpath to resolve symlinks — prevents double-loading when
+# the plugin dir is symlinked into plugins/.
+REDMINE_TX_MCP_LIB = File.realpath(File.expand_path('lib', __dir__))
+$LOAD_PATH.unshift REDMINE_TX_MCP_LIB
 
-# Ensure plugin lib files are reloaded in Rails development mode.
-# In production, to_prepare runs once (same as require). In development,
-# it runs before each request after code changes, ensuring constants
-# cleared by Rails autoloader are re-established.
+# Load all plugin files via to_prepare only.
+# In production this runs once (like require). In development it runs
+# before each request after code changes, re-establishing constants
+# cleared by the autoloader. No top-level require to avoid double-load
+# when the plugin directory is a symlink.
 Rails.application.config.to_prepare do
-  plugin_lib = File.realpath(File.expand_path('lib', __dir__))
   # Load in dependency order — base_tool before its subclasses
   %w[
     redmine_tx_mcp/llm_format_encoder
@@ -34,14 +22,16 @@ Rails.application.config.to_prepare do
     redmine_tx_mcp/tools/user_tool
     redmine_tx_mcp/tools/version_tool
     redmine_tx_mcp/tools/enumeration_tool
+    redmine_tx_mcp/anthropic_models_service
     redmine_tx_mcp/openai_adapter
+    redmine_tx_mcp/openai_models_service
     redmine_tx_mcp/chatbot_logger
     redmine_tx_mcp/claude_chatbot
     redmine_tx_mcp/llm_service
     redmine_tx_mcp/mcp_server
     redmine_tx_mcp/http_mcp_server
   ].each do |f|
-    load File.join(plugin_lib, "#{f}.rb")
+    load File.join(REDMINE_TX_MCP_LIB, "#{f}.rb")
   end
 end
 
