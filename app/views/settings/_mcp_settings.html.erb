@@ -240,40 +240,6 @@
     <em>One origin per line. <strong>Leave completely blank to allow ALL origins (*)</strong></em>
   </p>
 
-  <div style="margin-top: 10px;">
-    <div>
-      <%= check_box_tag 'settings[use_custom_summary_prompt]', '1',
-            @settings['use_custom_summary_prompt'].to_s == '1' || @settings['use_custom_summary_prompt'] == true,
-            id: 'settings_use_custom_summary_prompt' %>
-      <%= label_tag 'settings_use_custom_summary_prompt', '커스텀 일정요약 프롬프트 사용' %>
-      <em>체크 시 대시보드 AI 요약에 아래 프롬프트가 사용됩니다. 해제 시 내장 프롬프트가 사용됩니다.</em>
-    </div>
-    <div id="custom-summary-prompt-wrapper" style="margin-top: 6px;">
-      <%= text_area_tag 'settings[custom_summary_prompt]',
-            @settings['custom_summary_prompt'],
-            rows: 12,
-            style: 'width: 100%; font-family: monospace;',
-            id: 'settings_custom_summary_prompt',
-            placeholder: '커스텀 요약 프롬프트를 입력하세요...' %>
-      <em>데이터 컨텍스트 뒤에 이 프롬프트가 붙어 LLM에 전달됩니다.</em>
-    </div>
-  </div>
-
-  <script type="text/javascript">
-  (function() {
-    var checkbox = document.getElementById('settings_use_custom_summary_prompt');
-    var textarea = document.getElementById('settings_custom_summary_prompt');
-
-    function toggleTextarea() {
-      textarea.disabled = !checkbox.checked;
-      textarea.style.opacity = checkbox.checked ? '1' : '0.5';
-    }
-
-    checkbox.addEventListener('change', toggleTextarea);
-    toggleTextarea();
-  })();
-  </script>
-
   <p>
     <%= label_tag 'settings_log_level', 'Log Level' %>
     <%= select_tag 'settings[log_level]',

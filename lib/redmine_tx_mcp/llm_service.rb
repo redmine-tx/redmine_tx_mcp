@@ -32,11 +32,19 @@ module RedmineTxMcp
         return nil unless available?
 
         full_prompt = context ? "#{context}\n\n#{prompt}" : prompt
-        digest = Digest::SHA256.hexdigest(full_prompt)[0..15]
+        settings = plugin_settings
+        provider = settings['llm_provider'] || 'anthropic'
+        model = if provider == 'openai'
+                  settings['openai_model'].presence || 'default'
+                else
+                  settings['claude_model'].presence || 'claude-sonnet-4-6'
+                end
+        digest = Digest::SHA256.hexdigest("#{provider}:#{model}:#{full_prompt}")[0..15]
         cache_key = "#{CACHE_PREFIX}/#{digest}"
 
-        Rails.cache.fetch(cache_key, expires_in: CACHE_EXPIRES_IN) do
-          call_llm(full_prompt)
+        Rails.cache.fetch(cache_key, expires_in: CACHE_EXPIRES_IN, skip_nil: true) do
+          result = call_llm(full_prompt, summarize: true)
+          result.present? ? result : nil
         end
       rescue => e
         Rails.logger.error "LlmService error: #{e.message}\n#{e.backtrace.first(3).join("\n")}"
@@ -51,12 +59,12 @@ module RedmineTxMcp
         {}
       end
 
-      def call_llm(prompt)
+      def call_llm(prompt, summarize: false)
         settings = plugin_settings
         provider = settings['llm_provider'] || 'anthropic'
 
         if provider == 'openai'
-          call_openai(prompt, settings)
+          call_openai(prompt, settings, summarize: summarize)
         else
           call_anthropic(prompt, settings)
         end
@@ -94,15 +102,17 @@ module RedmineTxMcp
         text_block&.dig('text')
       end
 
-      def call_openai(prompt, settings)
+      def call_openai(prompt, settings, summarize: false)
         endpoint_url = settings['openai_endpoint_url']
         api_key = settings['openai_api_key'].presence
         model = settings['openai_model'].presence || 'default'
 
         # Use OpenaiAdapter for format conversion
+        # Thinking models (e.g. Qwen) consume tokens with reasoning before producing
+        # the actual answer — need much higher max_tokens for local models.
         anthropic_request = {
           model: model,
-          max_tokens: 1024,
+          max_tokens: summarize ? 16384 : 4096,
           messages: [{ role: 'user', content: prompt }]
         }
 

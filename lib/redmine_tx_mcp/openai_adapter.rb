@@ -221,10 +221,7 @@ module RedmineTxMcp
         body = {
           model: anthropic_req[:model] || anthropic_req['model'],
           messages: messages,
-          max_tokens: anthropic_req[:max_tokens] || anthropic_req['max_tokens'] || 4000,
-          # Disable thinking/reasoning mode for models like Qwen 3.5
-          # This tells Ollama to use the non-thinking chat template
-          chat_template: 'default'
+          max_tokens: anthropic_req[:max_tokens] || anthropic_req['max_tokens'] || 4000
         }
         body[:tools] = tools if tools.present?
         body
@@ -239,8 +236,13 @@ module RedmineTxMcp
         message = choice['message'] || {}
         content_blocks = []
 
-        # Text content (fall back to reasoning field for thinking models like Qwen 3.5)
-        text = message['content'].presence || message['reasoning'].presence
+        # Text content — prefer content; fall back to reasoning (Qwen puts answers there)
+        # Only use reasoning fallback when model finished normally (not truncated by token limit)
+        text = message['content'].presence
+        text = strip_thinking(text) if text.present?
+        if text.blank? && message['reasoning'].present? && choice['finish_reason'] != 'length'
+          text = strip_thinking(message['reasoning'])
+        end
         if text.present?
           content_blocks << { 'type' => 'text', 'text' => text }
         end
@@ -307,8 +309,13 @@ module RedmineTxMcp
       def assemble_streaming_response(msg_id:, model:, finish_reason:, content_text:, reasoning_text:, tool_calls_map:)
         content_blocks = []
 
-        # Text content (fall back to reasoning for thinking models)
-        text = content_text.presence || reasoning_text.presence
+        # Text content — prefer content; fall back to reasoning (Qwen puts answers there)
+        # Only use reasoning fallback when model finished normally (not truncated by token limit)
+        text = content_text.presence
+        text = strip_thinking(text) if text.present?
+        if text.blank? && reasoning_text.present? && finish_reason != 'length'
+          text = strip_thinking(reasoning_text)
+        end
         content_blocks << { 'type' => 'text', 'text' => text } if text.present?
 
         # Tool calls
@@ -346,6 +353,23 @@ module RedmineTxMcp
           'stop_reason' => stop_reason,
           'usage' => { 'input_tokens' => 0, 'output_tokens' => 0 }
         }
+      end
+
+      # Strip reasoning blocks emitted by thinking models like Qwen.
+      # Handles both <think> tags and untagged "Thinking Process:" patterns.
+      def strip_thinking(text)
+        return text unless text
+        # 1. Strip <think>...</think> tags
+        result = text.gsub(/<think>.*?<\/think>/m, '')
+        # 2. Strip untagged thinking: "Thinking Process:" or "**Thinking" followed by
+        #    reasoning text, then the actual answer (heuristic: first Korean sentence block)
+        if result.strip.empty? || result =~ /\A\s*(Thinking Process|<?\*?\*?Thinking)/i
+          # Try to find where the actual answer starts (Korean text block)
+          if (match = text.match(/([가-힣].{20,})/m))
+            result = match[0]
+          end
+        end
+        result.strip
       end
 
       def empty_response
