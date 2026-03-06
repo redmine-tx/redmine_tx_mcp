@@ -151,7 +151,22 @@ PROMPT
     max_request_size: 1024,
     enable_caching: false,
     cache_ttl: 300,
-    max_tool_call_depth: 10
+    max_tool_call_depth: 10,
+    use_custom_summary_prompt: false,
+    custom_summary_prompt: <<~PROMPT.strip
+위 프로젝트 마일스톤 현황 데이터를 바탕으로 프로젝트 매니저에게 보고하는 간결한 현황 요약을 작성해 주세요.
+
+요구사항:
+- 5~10문장으로 핵심을 전달
+- 가장 심각한 리스크나 주의사항을 먼저 언급
+- 일정 미배정 일감이 많은 경우(30% 이상), 일정 리스크 판단 자체가 어려운 상황임을 최우선으로 강조하고, 일정 배정이 선행되어야 한다는 점을 명확히 언급
+- 전체적인 진행 상태에 대한 판단 포함
+- 주요 일정(빌드 전달일, 마감일 등)의 경과/잔여 상황을 고려하여 현재 시점의 위치를 판단
+- 잔여 작업일 정보가 포함된 경우, 실제 작업 가능 일수를 기반으로 일정 리스크를 판단
+- 버그 수정 추이가 포함된 경우, 릴리즈까지 버그 해소 전망도 언급
+- 마크다운 없이 평문으로 작성
+- 한국어로 작성
+PROMPT
   }, partial: 'settings/mcp_settings'
 
   project_module :redmine_tx_mcp do
