@@ -17,6 +17,7 @@ require "redmine_tx_mcp/openai_adapter"
 require "redmine_tx_mcp/openai_models_service"
 require "redmine_tx_mcp/chatbot_logger"
 require "redmine_tx_mcp/claude_chatbot"
+require "redmine_tx_mcp/llm_service"
 
 # Ensure plugin lib files are reloaded in Rails development mode.
 # In production, to_prepare runs once (same as require). In development,
@@ -36,6 +37,7 @@ Rails.application.config.to_prepare do
     redmine_tx_mcp/openai_adapter
     redmine_tx_mcp/chatbot_logger
     redmine_tx_mcp/claude_chatbot
+    redmine_tx_mcp/llm_service
     redmine_tx_mcp/mcp_server
     redmine_tx_mcp/http_mcp_server
   ].each do |f|
