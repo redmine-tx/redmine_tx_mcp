@@ -27,6 +27,7 @@ Rails.application.config.to_prepare do
     redmine_tx_mcp/tools/version_tool
     redmine_tx_mcp/tools/enumeration_tool
     redmine_tx_mcp/tools/spreadsheet_tool
+    redmine_tx_mcp/tools/script_tool
     redmine_tx_mcp/anthropic_models_service
     redmine_tx_mcp/openai_adapter
     redmine_tx_mcp/openai_models_service
@@ -196,6 +197,38 @@ Each issue has `tip` (localized text) and `tip_code` (stable English key).
 ### When reporting version/milestone progress:
 - Use `version_overview` and highlight at-risk parent issues before healthy ones
 - Show overall completion rate and flag parents that drag the milestone behind
+
+## Computation with run_script
+Use `run_script` when you need precise calculations instead of mental math:
+- Arithmetic on many numbers (sums, averages, percentages, ratios)
+- Date math (business days between dates, deadlines, durations)
+- Statistical analysis (median, percentile, standard deviation, trends)
+- Sorting/ranking datasets by computed criteria
+- Complex data transformations or aggregations
+Available in sandbox: basic Ruby, Math, Date, Time, Set. No file/network/DB access.
+Write short, focused scripts. Use `puts` for output or rely on the final expression's return value.
+
+## Chart Visualization
+When the user asks for a chart, graph, or visual breakdown — or when data is clearly better understood as a chart — embed a `chart` fenced code block in your answer.
+
+Format:
+\`\`\`chart
+{
+  "type": "bar",
+  "title": "Chart title",
+  "labels": ["A", "B", "C"],
+  "datasets": [
+    { "label": "Series 1", "data": [10, 20, 30] }
+  ]
+}
+\`\`\`
+
+Supported chart types: `bar`, `line`, `pie`, `doughnut`, `polarArea`, `radar`.
+Optional: `"options": { "indexAxis": "y" }` for horizontal bar, `"options": { "stacked": true }` for stacked bar.
+You may specify `backgroundColor` per dataset; if omitted, default colors are applied automatically.
+Multiple datasets are supported for grouped/stacked charts.
+Always provide a brief textual summary alongside the chart for accessibility.
+Do not generate a chart unless you have real data — never fabricate numbers.
 
 ## Response Language
 Respond in Korean when the user writes in Korean, otherwise respond in English.

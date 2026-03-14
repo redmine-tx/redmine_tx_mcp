@@ -580,6 +580,29 @@
   font-weight: 600;
 }
 
+/* Chart.js containers in assistant messages */
+.chat-chart-container {
+  margin: 0.6em 0;
+  padding: 12px;
+  background: #fff;
+  border: 1px solid #d5e3ef;
+  border-radius: 10px;
+  max-width: 520px;
+}
+
+.chat-chart-title {
+  font-size: 13px;
+  font-weight: 700;
+  color: #334;
+  margin-bottom: 8px;
+  text-align: center;
+}
+
+.chat-chart-container canvas {
+  width: 100% !important;
+  max-height: 320px;
+}
+
 /* Responsive design */
 @media (max-width: 768px) {
   .chat-layout {

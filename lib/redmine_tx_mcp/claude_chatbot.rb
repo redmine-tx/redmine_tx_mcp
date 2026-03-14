@@ -113,6 +113,7 @@ module RedmineTxMcp
       version_list version_get version_overview bug_statistics
       enum_statuses enum_trackers enum_priorities enum_categories
       user_list user_get
+      run_script
     ].freeze
 
     READ_ONLY_TOOL_PATTERNS = [
@@ -122,7 +123,8 @@ module RedmineTxMcp
       /\Aproject_(list|get|members)\z/,
       /\Auser_(list|get|projects|groups|roles)\z/,
       /\Aspreadsheet_(list_uploads|list_sheets|preview_sheet|extract_rows)\z/,
-      /\Aenum_/
+      /\Aenum_/,
+      /\Arun_script\z/
     ].freeze
 
     def initialize(api_key: nil, model: nil, project_id: nil, provider: 'anthropic', endpoint_url: nil)
@@ -342,6 +344,7 @@ module RedmineTxMcp
       RedmineTxMcp::Tools::VersionTool
       RedmineTxMcp::Tools::EnumerationTool
       RedmineTxMcp::Tools::SpreadsheetTool
+      RedmineTxMcp::Tools::ScriptTool
     ].freeze
 
     def tool_classes

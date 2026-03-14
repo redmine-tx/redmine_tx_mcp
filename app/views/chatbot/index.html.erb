@@ -2,6 +2,7 @@
   <%= stylesheet_link_tag 'chatbot', plugin: :redmine_tx_mcp %>
   <%= javascript_include_tag 'marked.min', plugin: :redmine_tx_mcp %>
   <%= javascript_include_tag 'purify.min', plugin: :redmine_tx_mcp %>
+  <%= javascript_include_tag 'chart.umd.min', plugin: :redmine_tx_mcp %>
   <%= javascript_include_tag 'chatbot', plugin: :redmine_tx_mcp %>
 <% end %>
 
@@ -155,8 +156,98 @@ function renderExistingMarkdown() {
   var els = document.querySelectorAll('.message.assistant .message-content.markdown-body[data-raw]');
   for (var i = 0; i < els.length; i++) {
     var raw = els[i].getAttribute('data-raw');
-    if (raw) els[i].innerHTML = renderMarkdown(raw);
+    if (raw) {
+      els[i].innerHTML = renderMarkdown(raw);
+      initializeCharts(els[i]);
+    }
   }
+}
+
+function initializeCharts(containerEl) {
+  if (typeof Chart === 'undefined') return;
+
+  var codeEls = containerEl.querySelectorAll('code.language-chart');
+  for (var i = 0; i < codeEls.length; i++) {
+    var codeEl = codeEls[i];
+    var preEl = codeEl.parentElement;
+    if (!preEl || preEl.tagName !== 'PRE') continue;
+
+    try {
+      var config = JSON.parse(codeEl.textContent);
+      var wrapper = document.createElement('div');
+      wrapper.className = 'chat-chart-container';
+
+      if (config.title) {
+        var titleEl = document.createElement('div');
+        titleEl.className = 'chat-chart-title';
+        titleEl.textContent = config.title;
+        wrapper.appendChild(titleEl);
+      }
+
+      var canvas = document.createElement('canvas');
+      wrapper.appendChild(canvas);
+      preEl.parentNode.replaceChild(wrapper, preEl);
+
+      new Chart(canvas, buildChartConfig(config));
+    } catch (e) {
+      console.error('Chart render error:', e);
+    }
+  }
+}
+
+function buildChartConfig(config) {
+  var chartType = config.type || 'bar';
+  var datasets = (config.datasets || []).slice();
+  var isPieType = (chartType === 'pie' || chartType === 'doughnut' || chartType === 'polarArea');
+  var defaultColors = [
+    '#36a2eb', '#ff6384', '#4bc0c0', '#ff9f40',
+    '#9966ff', '#ffcd56', '#c9cbcf', '#7bc8a4',
+    '#e8575a', '#58a6df', '#63c29f', '#f5a623'
+  ];
+
+  for (var i = 0; i < datasets.length; i++) {
+    var ds = datasets[i];
+    if (!ds.backgroundColor) {
+      if (isPieType) {
+        ds.backgroundColor = defaultColors.slice(0, (config.labels || []).length);
+      } else {
+        ds.backgroundColor = defaultColors[i % defaultColors.length];
+        if (!ds.borderColor) ds.borderColor = ds.backgroundColor;
+      }
+    }
+  }
+
+  var options = {
+    responsive: true,
+    maintainAspectRatio: true,
+    plugins: {
+      title: { display: false },
+      legend: {
+        display: datasets.length > 1 || isPieType,
+        position: 'bottom',
+        labels: { boxWidth: 12, padding: 12 }
+      }
+    }
+  };
+
+  if (config.options) {
+    if (config.options.indexAxis) options.indexAxis = config.options.indexAxis;
+    if (config.options.stacked) {
+      options.scales = {
+        x: { stacked: true },
+        y: { stacked: true }
+      };
+    }
+  }
+
+  return {
+    type: chartType,
+    data: {
+      labels: config.labels || [],
+      datasets: datasets
+    },
+    options: options
+  };
 }
 
 function initializeChatbot() {
@@ -579,6 +670,7 @@ function addMessage(role, content) {
   if (role === 'assistant') {
     contentDiv.className = 'message-content markdown-body';
     contentDiv.innerHTML = renderMarkdown(content);
+    initializeCharts(contentDiv);
   } else {
     contentDiv.className = 'message-content';
     contentDiv.innerHTML = escapeHtml(content).replace(/\n/g, '<br>');

@@ -603,16 +603,21 @@ module RedmineTxMcp
                             []
                           end
 
-          # Base scope: bugs in project, not discarded
-          scope = Issue.where(project_id: project.id, tracker_id: bug_tracker_ids)
-          scope = scope.where.not(status_id: discarded_ids) if discarded_ids.any?
-
           # Optional version filter
           version = nil
           if args['version_id']
             version = Version.find(args['version_id'])
-            scope = scope.where(fixed_version_id: version.id)
           end
+
+          # Base scope: bugs, not discarded.
+          # When version is given, use version.fixed_issues to include all
+          # subprojects sharing this version (matches Redmine milestone page).
+          scope = if version
+                    version.fixed_issues.where(tracker_id: bug_tracker_ids)
+                  else
+                    Issue.where(project_id: project.id, tracker_id: bug_tracker_ids)
+                  end
+          scope = scope.where.not(status_id: discarded_ids) if discarded_ids.any?
 
           # Load all matching bugs into memory
           all_bugs = scope.includes(:status, :category, :assigned_to, :fixed_version).to_a
