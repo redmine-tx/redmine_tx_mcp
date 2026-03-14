@@ -1,12 +1,11 @@
 .chat-layout {
   display: grid;
-  grid-template-columns: 280px minmax(0, 1fr) 320px;
+  grid-template-columns: 280px minmax(0, 1fr);
   gap: 16px;
   align-items: start;
 }
 
 .chat-shell,
-.chat-sidebar,
 .chat-nav-sidebar {
   margin-bottom: 0;
 }
@@ -15,6 +14,11 @@
   display: flex;
   flex-direction: column;
   gap: 18px;
+}
+
+.chat-nav-panel .workspace-panel {
+  padding-top: 18px;
+  border-top: 1px solid #edf1f5;
 }
 
 .chat-new-conversation-form {
@@ -299,10 +303,6 @@
 @media (max-width: 1200px) {
   .chat-layout {
     grid-template-columns: 240px minmax(0, 1fr);
-  }
-
-  .chat-sidebar {
-    grid-column: 1 / -1;
   }
 }
 

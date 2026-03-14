@@ -40,6 +40,43 @@
           <% end %>
         </ul>
       </div>
+
+      <div class="workspace-panel">
+        <h3>Session Files</h3>
+        <p class="workspace-help">Uploaded files and generated reports are isolated per user and chatbot session.</p>
+
+        <div class="workspace-block">
+          <h4>Uploads</h4>
+          <ul id="workspace-uploads" class="workspace-list">
+            <% if @workspace_uploads.any? %>
+              <% @workspace_uploads.each do |file| %>
+                <li>
+                  <span class="workspace-name"><%= h(file[:stored_name]) %></span>
+                  <span class="workspace-meta"><%= h(file[:size_label]) %></span>
+                </li>
+              <% end %>
+            <% else %>
+              <li class="workspace-empty">No uploaded files</li>
+            <% end %>
+          </ul>
+        </div>
+
+        <div class="workspace-block">
+          <h4>Reports</h4>
+          <ul id="workspace-reports" class="workspace-list">
+            <% if @workspace_reports.any? %>
+              <% @workspace_reports.each do |file| %>
+                <li>
+                  <a href="<%= h(file[:download_path]) %>" class="workspace-link"><%= h(file[:stored_name]) %></a>
+                  <span class="workspace-meta"><%= h(file[:size_label]) %></span>
+                </li>
+              <% end %>
+            <% else %>
+              <li class="workspace-empty">No generated reports</li>
+            <% end %>
+          </ul>
+        </div>
+      </div>
     </div>
   </div>
 
@@ -82,45 +119,6 @@
             </div>
           </div>
         <% end %>
-      </div>
-    </div>
-  </div>
-
-  <div class="box chat-sidebar">
-    <div class="workspace-panel">
-      <h3>Session Files</h3>
-      <p class="workspace-help">Uploaded files and generated reports are isolated per user and chatbot session.</p>
-
-      <div class="workspace-block">
-        <h4>Uploads</h4>
-        <ul id="workspace-uploads" class="workspace-list">
-          <% if @workspace_uploads.any? %>
-            <% @workspace_uploads.each do |file| %>
-              <li>
-                <span class="workspace-name"><%= h(file[:stored_name]) %></span>
-                <span class="workspace-meta"><%= h(file[:size_label]) %></span>
-              </li>
-            <% end %>
-          <% else %>
-            <li class="workspace-empty">No uploaded files</li>
-          <% end %>
-        </ul>
-      </div>
-
-      <div class="workspace-block">
-        <h4>Reports</h4>
-        <ul id="workspace-reports" class="workspace-list">
-          <% if @workspace_reports.any? %>
-            <% @workspace_reports.each do |file| %>
-              <li>
-                <a href="<%= h(file[:download_path]) %>" class="workspace-link"><%= h(file[:stored_name]) %></a>
-                <span class="workspace-meta"><%= h(file[:size_label]) %></span>
-              </li>
-            <% end %>
-          <% else %>
-            <li class="workspace-empty">No generated reports</li>
-          <% end %>
-        </ul>
       </div>
     </div>
   </div>
