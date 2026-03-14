@@ -353,12 +353,12 @@ class ChatbotController < ApplicationController
     history << {
       'role' => 'user',
       'content' => user_message,
-      'timestamp' => timestamp.strftime("%H:%M")
+      'timestamp' => timestamp.iso8601
     }
     history << {
       'role' => 'assistant',
       'content' => assistant_message,
-      'timestamp' => timestamp.strftime("%H:%M")
+      'timestamp' => timestamp.iso8601
     }
 
     data['display_history'] = history.last(20)
@@ -405,7 +405,7 @@ class ChatbotController < ApplicationController
     {
       'role' => role,
       'content' => content,
-      'timestamp' => (msg['timestamp'] || msg[:timestamp] || Time.current.strftime("%H:%M"))
+      'timestamp' => (msg['timestamp'] || msg[:timestamp] || Time.current.iso8601)
     }
   end
 
@@ -522,10 +522,11 @@ class ChatbotController < ApplicationController
   def format_session_timestamp(timestamp)
     return '' unless timestamp
 
-    if timestamp.to_date == Date.current
-      timestamp.strftime('%H:%M')
+    local = User.current.convert_time_to_user_timezone(timestamp)
+    if local.to_date == User.current.today
+      local.strftime('%H:%M')
     else
-      timestamp.strftime('%m-%d')
+      local.strftime('%m-%d')
     end
   end
 
@@ -608,12 +609,12 @@ class ChatbotController < ApplicationController
     history << {
       'role' => 'user',
       'content' => upload_request_message(saved_files),
-      'timestamp' => timestamp.strftime("%H:%M")
+      'timestamp' => timestamp.iso8601
     }
     history << {
       'role' => 'assistant',
       'content' => assistant_message,
-      'timestamp' => timestamp.strftime("%H:%M")
+      'timestamp' => timestamp.iso8601
     }
 
     data['display_history'] = history.last(20)

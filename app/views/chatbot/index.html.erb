@@ -25,12 +25,13 @@
           <% if @recent_chat_sessions.any? %>
             <% @recent_chat_sessions.each do |chat_session| %>
               <% touched_at = chat_session.last_message_at || chat_session.updated_at || chat_session.created_at %>
+              <% local_touched_at = User.current.convert_time_to_user_timezone(touched_at) %>
               <li class="chat-session-item">
                 <a href="<%= project_chatbot_path(@project, conversation: chat_session.session_id) %>"
                    class="chat-session-link<%= ' active' if chat_session.session_id == @chatbot_session_id %>">
                   <span class="chat-session-title"><%= h(chat_session.display_title) %></span>
                   <span class="chat-session-meta">
-                    <%= touched_at.to_date == Date.current ? touched_at.strftime('%H:%M') : touched_at.strftime('%m-%d') %>
+                    <%= local_touched_at.to_date == User.current.today ? local_touched_at.strftime('%H:%M') : local_touched_at.strftime('%m-%d') %>
                   </span>
                 </a>
               </li>
@@ -94,7 +95,16 @@
               <%= simple_format(h(msg['content'])) %>
             </div>
             <div class="message-time">
-              <%= Time.parse(msg['timestamp']).strftime("%H:%M") rescue '' %>
+              <%= begin
+                    ts = msg['timestamp'].to_s
+                    if ts.match?(/\A\d{1,2}:\d{2}\z/)
+                      ts
+                    else
+                      User.current.convert_time_to_user_timezone(Time.parse(ts)).strftime("%H:%M")
+                    end
+                  rescue
+                    ''
+                  end %>
             </div>
           </div>
         <% end %>
