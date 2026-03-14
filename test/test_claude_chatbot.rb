@@ -51,6 +51,8 @@ class ClaudeChatbotTest < ActiveSupport::TestCase
     assert_not_nil plan
     assert_equal '계획', plan[:title]
     assert_equal 3, plan[:steps].size
+    assert_match(/#123/, plan[:steps].first)
+    assert_match(/QA|상태/, plan[:steps][1])
     assert_match(/수정/, plan[:steps].last)
   end
 
@@ -81,6 +83,8 @@ class ClaudeChatbotTest < ActiveSupport::TestCase
 
     assert_not_nil plan
     assert_match(/issue_list/, plan[:steps].first)
+    assert_match(/로그인/, plan[:steps].first)
+    assert_match(/선행/, plan[:steps][1])
     assert_match(/issue_get|issue_relations_get/, plan[:steps][1])
   end
 
@@ -109,11 +113,23 @@ class ClaudeChatbotTest < ActiveSupport::TestCase
   test "spreadsheet requests produce spreadsheet-aware plan" do
     chatbot = build_chatbot
 
-    plan = chatbot.send(:build_execution_plan, '업로드한 엑셀 기준으로 이슈 상태를 바꾸고 결과 엑셀도 만들어줘')
+    plan = chatbot.send(:build_execution_plan, 'report.xlsx 기준으로 미배정 이슈 상태를 바꾸고 결과 엑셀도 만들어줘')
 
     assert_not_nil plan
-    assert_match(/spreadsheet_list_uploads/, plan[:steps].first)
+    assert_match(/report\.xlsx/, plan[:steps].first)
+    assert_match(/미배정/, plan[:steps][1])
     assert_match(/spreadsheet_export_report/, plan[:steps].last)
+  end
+
+  test "issue search plans include search filters from the question" do
+    chatbot = build_chatbot
+
+    plan = chatbot.send(:build_execution_plan, '미배정 버그 이슈를 찾아서 원인을 정리해줘')
+
+    assert_not_nil plan
+    assert_match(/미배정/, plan[:steps].first)
+    assert_match(/버그/, plan[:steps].first)
+    assert_match(/근거|원인/, plan[:steps].last)
   end
 
   test "system message includes workspace uploads and reports when workspace context is set" do

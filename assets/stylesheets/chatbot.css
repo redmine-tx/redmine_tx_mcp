@@ -51,6 +51,29 @@
 
 .chat-session-item {
   margin: 0;
+  position: relative;
+}
+
+.chat-session-delete {
+  position: absolute;
+  right: 6px;
+  top: 50%;
+  transform: translateY(-50%);
+  opacity: 0;
+  transition: opacity 0.15s;
+  cursor: pointer;
+  text-decoration: none !important;
+  padding: 2px 4px;
+  border-radius: 4px;
+}
+
+.chat-session-item:hover .chat-session-delete {
+  opacity: 0.4;
+}
+
+.chat-session-delete:hover {
+  opacity: 1 !important;
+  background-color: rgba(200, 50, 50, 0.08);
 }
 
 .chat-session-link {

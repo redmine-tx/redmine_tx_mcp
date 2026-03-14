@@ -5,10 +5,7 @@
   <%= javascript_include_tag 'chatbot', plugin: :redmine_tx_mcp %>
 <% end %>
 
-<div class="contextual">
-  <%= link_to "현재 대화 삭제", "#", onclick: "resetChat(); return false;", class: "icon icon-reload" %>
-</div>
-
+<% html_title 'AI Assistant' %>
 <h2>AI Assistant</h2>
 
 <div class="chat-layout">
@@ -34,6 +31,10 @@
                     <%= local_touched_at.to_date == User.current.today ? local_touched_at.strftime('%H:%M') : local_touched_at.strftime('%m-%d') %>
                   </span>
                 </a>
+                <a href="#" class="chat-session-delete icon icon-del"
+                   data-session-id="<%= chat_session.session_id %>"
+                   onclick="deleteSession('<%= chat_session.session_id %>'); return false;"
+                   title="삭제"></a>
               </li>
             <% end %>
           <% else %>
@@ -347,12 +348,14 @@ function renderSessionList(items, activeSessionId) {
     var active = item.session_id === activeSessionId || item.active;
     if (active && item.title) activeTitle = item.title;
 
+    var sid = escapeHtml(item.session_id || '');
     html.push(
       '<li class="chat-session-item">' +
         '<a href="' + escapeHtml(item.path || '#') + '" class="chat-session-link' + (active ? ' active' : '') + '">' +
           '<span class="chat-session-title">' + escapeHtml(item.title || '새 대화') + '</span>' +
           '<span class="chat-session-meta">' + escapeHtml(item.updated_label || '') + '</span>' +
         '</a>' +
+        '<a href="#" class="chat-session-delete icon icon-del" data-session-id="' + sid + '" onclick="deleteSession(\'' + sid + '\'); return false;" title="삭제"></a>' +
       '</li>'
     );
   }
@@ -608,38 +611,57 @@ function escapeHtml(text) {
   return div.innerHTML;
 }
 
-function resetChat() {
-  if (confirm('현재 대화를 삭제하시겠습니까?')) {
-    fetch('<%= reset_chatbot_path(@project) %>', {
-      method: 'POST',
-      headers: {
-        'X-CSRF-Token': document.querySelector('meta[name="csrf-token"]').getAttribute('content'),
-        'Content-Type': 'application/x-www-form-urlencoded; charset=UTF-8'
-      },
-      body: 'conversation=' + encodeURIComponent((document.getElementById('chat-conversation-id') || {}).value || '')
-    })
-    .then(function(response) {
-      return response.json().then(function(data) {
-        return { ok: response.ok, data: data };
-      });
-    })
-    .then(function(result) {
-      if (result.ok) {
-        location.href = result.data.redirect_url || '<%= project_chatbot_path(@project) %>';
-        return;
-      }
+function deleteSession(sessionId) {
+  if (!confirm('이 대화를 삭제하시겠습니까?')) return;
 
-      if (result.data && result.data.redirect_url) {
-        alert(result.data.error || '세션을 찾을 수 없습니다.');
-        location.href = result.data.redirect_url;
-        return;
-      }
+  var activeSessionId = (document.getElementById('chat-conversation-id') || {}).value || '';
+  var isActive = sessionId === activeSessionId;
 
-      throw new Error((result.data && result.data.error) || '대화를 삭제하지 못했습니다.');
-    })
-    .catch(function(error) {
-      alert(error.message || '대화를 삭제하지 못했습니다.');
+  fetch('<%= reset_chatbot_path(@project) %>', {
+    method: 'POST',
+    headers: {
+      'X-CSRF-Token': document.querySelector('meta[name="csrf-token"]').getAttribute('content'),
+      'Content-Type': 'application/x-www-form-urlencoded; charset=UTF-8'
+    },
+    body: 'conversation=' + encodeURIComponent(sessionId)
+  })
+  .then(function(response) {
+    return response.json().then(function(data) {
+      return { ok: response.ok, data: data };
     });
+  })
+  .then(function(result) {
+    if (result.ok) {
+      if (isActive) {
+        location.href = result.data.redirect_url || '<%= project_chatbot_path(@project) %>';
+      } else {
+        removeSessionItem(sessionId);
+      }
+      return;
+    }
+    throw new Error((result.data && result.data.error) || '대화를 삭제하지 못했습니다.');
+  })
+  .catch(function(error) {
+    alert(error.message || '대화를 삭제하지 못했습니다.');
+  });
+}
+
+function removeSessionItem(sessionId) {
+  var list = document.getElementById('chat-session-list');
+  if (!list) return;
+
+  var items = list.querySelectorAll('.chat-session-item');
+  for (var i = 0; i < items.length; i++) {
+    var deleteBtn = items[i].querySelector('.chat-session-delete');
+    if (deleteBtn && deleteBtn.getAttribute('data-session-id') === sessionId) {
+      items[i].remove();
+      break;
+    }
+  }
+
+  if (!list.querySelector('.chat-session-item')) {
+    list.innerHTML = '<li class="chat-session-empty">No recent sessions</li>';
   }
 }
+
 </script>

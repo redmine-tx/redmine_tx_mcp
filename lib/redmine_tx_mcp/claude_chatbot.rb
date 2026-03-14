@@ -935,132 +935,25 @@ module RedmineTxMcp
       return nil if message.empty?
 
       korean = korean_message?(message)
+      context = extract_plan_context(message, korean)
       plan = if spreadsheet_intent?(message) && mutation_intent?(message)
-        localized_plan(
-          korean,
-          [
-            "업로드된 파일을 spreadsheet_list_uploads와 spreadsheet_list_sheets로 확인합니다.",
-            "필요한 시트와 행만 spreadsheet_preview_sheet 또는 spreadsheet_extract_rows로 읽습니다.",
-            "이슈 변경을 적용하고 필요하면 spreadsheet_export_report로 결과 파일을 만듭니다."
-          ],
-          [
-            "Inspect the uploaded file with spreadsheet_list_uploads and spreadsheet_list_sheets.",
-            "Read only the needed sheet window or structured rows with spreadsheet_preview_sheet or spreadsheet_extract_rows.",
-            "Apply the requested issue changes and create a downloadable report with spreadsheet_export_report if needed."
-          ]
-        )
+        build_spreadsheet_mutation_plan(context, korean)
       elsif spreadsheet_intent?(message)
-        localized_plan(
-          korean,
-          [
-            "업로드된 파일 목록과 시트 구성을 확인합니다.",
-            "필요한 부분만 미리보기나 행 추출로 읽어 핵심 데이터를 정리합니다.",
-            "요청하면 spreadsheet_export_report로 결과 엑셀을 생성합니다."
-          ],
-          [
-            "Check which uploaded files and sheets are available.",
-            "Read only the relevant preview window or extracted rows to gather the needed data.",
-            "Create a downloadable Excel report with spreadsheet_export_report if the user wants the result file."
-          ]
-        )
+        build_spreadsheet_read_plan(context, korean)
       elsif relation_intent?(message) && mutation_intent?(message)
-        localized_plan(
-          korean,
-          [
-            "관련 이슈를 issue_list로 찾고, 대상 이슈는 issue_get 또는 issue_relations_get으로 현재 관계를 확인합니다.",
-            "요청한 관계를 issue_relation_create 또는 issue_relation_delete로 반영합니다.",
-            "변경 후 issue_get으로 관계가 기대대로 보이는지 검증합니다."
-          ],
-          [
-            "Use issue_list to identify the issues, then inspect the current dependency with issue_get or issue_relations_get.",
-            "Apply the requested relation change with issue_relation_create or issue_relation_delete.",
-            "Verify the final relation state with issue_get."
-          ]
-        )
+        build_relation_mutation_plan(context, korean)
       elsif mutation_intent?(message) && bulk_operation_intent?(message)
-        localized_plan(
-          korean,
-          [
-            "수정할 이슈 목록과 현재 상태를 확인합니다.",
-            "필요한 상태, 담당자, 버전 같은 유효 값을 조회합니다.",
-            "insert_bulk_update로 일괄 수정한 뒤 결과를 검증합니다."
-          ],
-          [
-            "Identify the target issue set and inspect the current state.",
-            "Look up any valid status, assignee, or version values needed for the change.",
-            "Apply the change with insert_bulk_update and verify the results."
-          ]
-        )
+        build_bulk_mutation_plan(context, korean)
       elsif mutation_intent?(message)
-        localized_plan(
-          korean,
-          [
-            "대상 이슈와 현재 상태를 확인합니다.",
-            "변경에 필요한 상태, 담당자, 버전 같은 유효 값을 조회합니다.",
-            "수정을 적용한 뒤 결과를 다시 확인합니다."
-          ],
-          [
-            "Identify the target issue and inspect its current state.",
-            "Look up any valid status, assignee, or version values needed for the change.",
-            "Apply the requested update and verify the result."
-          ]
-        )
+        build_mutation_plan(context, korean)
       elsif bug_analysis_intent?(message)
-        localized_plan(
-          korean,
-          [
-            "버그 범위를 프로젝트나 버전 기준으로 먼저 확정합니다.",
-            "통계와 관련 이슈를 조회해 위험 신호를 찾습니다.",
-            "핵심 문제와 후속 확인 포인트를 정리합니다."
-          ],
-          [
-            "Pin down the bug scope by project or version first.",
-            "Pull the relevant statistics and issue data to find risk signals.",
-            "Summarize the main problems and the next checks."
-          ]
-        )
+        build_bug_analysis_plan(context, korean)
       elsif version_progress_intent?(message)
-        localized_plan(
-          korean,
-          [
-            "관련 버전이나 상위 이슈를 식별합니다.",
-            "진척도와 지연 요소를 요약 도구로 확인합니다.",
-            "주의가 필요한 항목부터 정리해 답합니다."
-          ],
-          [
-            "Identify the relevant version or parent issue.",
-            "Use the summary tools to inspect progress and delays.",
-            "Answer with the at-risk items first, then the overall status."
-          ]
-        )
+        build_version_progress_plan(context, korean)
       elsif relation_intent?(message)
-        localized_plan(
-          korean,
-          [
-            "질문에 맞는 이슈를 issue_list로 찾습니다.",
-            "정확한 대상이 정해지면 issue_get 또는 issue_relations_get으로 부모와 현재 관계를 확인합니다.",
-            "관계 방향과 근거를 함께 정리합니다."
-          ],
-          [
-            "Use issue_list to find the right issue first.",
-            "Once the target is exact, use issue_get or issue_relations_get to inspect the parent and current relations.",
-            "Answer with the relation direction and supporting evidence."
-          ]
-        )
+        build_relation_read_plan(context, korean)
       elsif issue_search_intent?(message) || message.length >= 12
-        localized_plan(
-          korean,
-          [
-            "질문에 맞는 이슈나 관련 대상을 issue_list로 찾습니다. 이름 기반 필터가 있으면 우선 활용합니다.",
-            "정확한 한 건이 정해지면 issue_get으로 상세 필드, 부모, 현재 관계를 확인합니다.",
-            "근거와 함께 결론을 정리합니다."
-          ],
-          [
-            "Use issue_list to find the issue or related entity that matches the request, using name-based filters when possible.",
-            "Once you have one exact issue, switch to issue_get for detailed fields, parent info, and current relations.",
-            "Summarize the conclusion with supporting evidence."
-          ]
-        )
+        build_issue_search_plan(context, korean)
       end
 
       return nil unless plan
@@ -1074,6 +967,391 @@ module RedmineTxMcp
 
     def localized_plan(korean, ko_steps, en_steps)
       korean ? ko_steps : en_steps
+    end
+
+    def build_spreadsheet_mutation_plan(context, korean)
+      source = spreadsheet_source_phrase(context, korean)
+      data_scope = search_scope_phrase(context, korean, fallback: korean ? '변경 대상 조건' : 'the target conditions')
+      change = mutation_scope_phrase(context, korean, fallback: korean ? '요청한 이슈 변경' : 'the requested issue changes')
+
+      localized_plan(
+        korean,
+        [
+          "#{source}을 spreadsheet_list_uploads와 spreadsheet_list_sheets로 확인합니다.",
+          "#{data_scope}에 맞는 시트와 행만 spreadsheet_preview_sheet 또는 spreadsheet_extract_rows로 읽습니다.",
+          "#{change}를 적용하고 필요하면 spreadsheet_export_report로 결과 파일을 만듭니다."
+        ],
+        [
+          "Inspect #{source} with spreadsheet_list_uploads and spreadsheet_list_sheets.",
+          "Read only the sheets and rows that match #{data_scope} with spreadsheet_preview_sheet or spreadsheet_extract_rows.",
+          "Apply #{change} and create a downloadable file with spreadsheet_export_report if needed."
+        ]
+      )
+    end
+
+    def build_spreadsheet_read_plan(context, korean)
+      source = spreadsheet_source_phrase(context, korean)
+      data_scope = search_scope_phrase(context, korean, fallback: korean ? '필요한 데이터 구간' : 'the needed data window')
+
+      localized_plan(
+        korean,
+        [
+          "#{source}의 파일 목록과 시트 구성을 확인합니다.",
+          "#{data_scope}에 맞는 부분만 미리보기나 행 추출로 읽습니다.",
+          "읽은 내용을 근거로 답하고, 요청하면 spreadsheet_export_report로 결과 엑셀을 생성합니다."
+        ],
+        [
+          "Check the available files and sheets in #{source}.",
+          "Read only the relevant preview window or extracted rows for #{data_scope}.",
+          "Answer from that data, and create a downloadable Excel report with spreadsheet_export_report if requested."
+        ]
+      )
+    end
+
+    def build_relation_mutation_plan(context, korean)
+      target = target_scope_phrase(context, korean, fallback: korean ? '대상 이슈' : 'the target issues')
+      relation_scope = relation_scope_phrase(context, korean, fallback: korean ? '요청한 관계' : 'the requested relation')
+
+      localized_plan(
+        korean,
+        [
+          "issue_list로 #{target}를 찾고, issue_get 또는 issue_relations_get으로 #{relation_scope}의 현재 상태를 확인합니다.",
+          "요청한 변경에 맞춰 issue_relation_create 또는 issue_relation_delete로 #{relation_scope}를 반영합니다.",
+          "변경 후 issue_get으로 #{relation_scope}가 기대대로 보이는지 검증합니다."
+        ],
+        [
+          "Use issue_list to identify #{target}, then inspect the current #{relation_scope} with issue_get or issue_relations_get.",
+          "Apply the requested change to #{relation_scope} with issue_relation_create or issue_relation_delete.",
+          "Verify with issue_get that #{relation_scope} now matches the request."
+        ]
+      )
+    end
+
+    def build_bulk_mutation_plan(context, korean)
+      target = target_scope_phrase(context, korean, fallback: korean ? '수정할 이슈 묶음' : 'the target issue set')
+      change = mutation_scope_phrase(context, korean, fallback: korean ? '요청한 변경' : 'the requested change')
+
+      localized_plan(
+        korean,
+        [
+          "#{target}의 현재 상태를 먼저 확인합니다.",
+          "#{change}에 필요한 상태, 담당자, 버전 같은 유효 값을 조회합니다.",
+          "insert_bulk_update로 #{change}를 일괄 적용한 뒤 결과를 검증합니다."
+        ],
+        [
+          "Inspect the current state of #{target} first.",
+          "Look up any valid status, assignee, or version values needed for #{change}.",
+          "Apply #{change} with insert_bulk_update and verify the results."
+        ]
+      )
+    end
+
+    def build_mutation_plan(context, korean)
+      target = target_scope_phrase(context, korean, fallback: korean ? '대상 이슈' : 'the target issue')
+      change = mutation_scope_phrase(context, korean, fallback: korean ? '요청한 변경' : 'the requested change')
+
+      localized_plan(
+        korean,
+        [
+          "#{target}와 현재 상태를 확인합니다.",
+          "#{change}에 필요한 상태, 담당자, 버전 같은 유효 값을 조회합니다.",
+          "issue_update로 #{change}를 적용한 뒤 결과를 다시 확인합니다."
+        ],
+        [
+          "Identify #{target} and inspect its current state.",
+          "Look up any valid status, assignee, or version values needed for #{change}.",
+          "Apply #{change} with issue_update and verify the result."
+        ]
+      )
+    end
+
+    def build_bug_analysis_plan(context, korean)
+      scope = analysis_scope_phrase(context, korean, fallback: korean ? '질문 범위' : 'the requested scope')
+
+      localized_plan(
+        korean,
+        [
+          "#{scope} 기준으로 버그 범위를 먼저 확정합니다.",
+          "bug_statistics와 issue_list로 위험 신호와 관련 이슈를 조회합니다.",
+          "#{scope}에서 핵심 문제와 후속 확인 포인트를 정리합니다."
+        ],
+        [
+          "Pin down the bug scope for #{scope} first.",
+          "Use bug_statistics and issue_list to find risk signals and related issues.",
+          "Summarize the main problems and next checks for #{scope}."
+        ]
+      )
+    end
+
+    def build_version_progress_plan(context, korean)
+      scope = version_scope_phrase(context, korean, fallback: korean ? '관련 버전이나 상위 이슈' : 'the relevant version or parent issue')
+
+      localized_plan(
+        korean,
+        [
+          "#{scope}를 먼저 식별합니다.",
+          "version_overview 또는 issue_children_summary로 진행률과 지연 요소를 확인합니다.",
+          "#{scope} 기준으로 주의가 필요한 항목부터 정리합니다."
+        ],
+        [
+          "Identify #{scope} first.",
+          "Use version_overview or issue_children_summary to inspect progress and delay factors.",
+          "Answer with the at-risk items first for #{scope}, then the overall status."
+        ]
+      )
+    end
+
+    def build_relation_read_plan(context, korean)
+      target = target_scope_phrase(context, korean, fallback: korean ? '질문에 맞는 이슈' : 'the right issue')
+      relation_scope = relation_scope_phrase(context, korean, fallback: korean ? '관계 방향' : 'the relation direction')
+
+      localized_plan(
+        korean,
+        [
+          "issue_list로 #{target}를 찾습니다.",
+          "정확한 대상이 정해지면 issue_get 또는 issue_relations_get으로 부모와 #{relation_scope}를 확인합니다.",
+          "#{relation_scope}와 근거를 함께 정리합니다."
+        ],
+        [
+          "Use issue_list to find #{target}.",
+          "Once the target is exact, use issue_get or issue_relations_get to inspect the parent and #{relation_scope}.",
+          "Answer with #{relation_scope} and the supporting evidence."
+        ]
+      )
+    end
+
+    def build_issue_search_plan(context, korean)
+      scope = search_scope_phrase(context, korean, fallback: korean ? '질문에 맞는 이슈나 관련 대상' : 'the issue or related entity that matches the request')
+      detail_target = exact_issue_phrase(context, korean, fallback: korean ? '정확한 한 건' : 'one exact issue')
+      conclusion = conclusion_scope_phrase(context, korean, fallback: korean ? '질문한 항목' : 'the requested point')
+
+      localized_plan(
+        korean,
+        [
+          "issue_list로 #{scope}를 찾습니다. 이름 기반 필터가 있으면 우선 활용합니다.",
+          "#{detail_target}이 정해지면 issue_get으로 상세 필드, 부모, 현재 관계를 확인합니다.",
+          "#{conclusion}에 대해 근거와 함께 결론을 정리합니다."
+        ],
+        [
+          "Use issue_list to find #{scope}, using name-based filters when possible.",
+          "Once #{detail_target} is exact, switch to issue_get for detailed fields, parent info, and current relations.",
+          "Summarize #{conclusion} with supporting evidence."
+        ]
+      )
+    end
+
+    def extract_plan_context(message, korean)
+      {
+        issue_refs: extract_issue_refs(message),
+        file_refs: extract_file_refs(message),
+        subject: extract_subject_label(message),
+        filters: extract_filter_labels(message, korean),
+        relations: extract_relation_labels(message, korean),
+        mutations: extract_mutation_labels(message, korean),
+        versions: extract_version_labels(message, korean)
+      }
+    end
+
+    def extract_issue_refs(message)
+      message.to_s.scan(/#\d+|(?:이슈|issue)\s*#?\d+|\b\d+\s*번\b/i).filter_map do |token|
+        id = token.to_s.scan(/\d+/).first
+        "##{id}" if id.present?
+      end.uniq.first(4)
+    end
+
+    def extract_file_refs(message)
+      message.to_s.scan(/\b[\w.\-]+\.(?:xlsx|csv|tsv)\b/i).uniq.first(3)
+    end
+
+    def extract_subject_label(message)
+      quoted = message.to_s[/["'“”‘’]([^"'“”‘’]{2,60})["'“”‘’]/, 1]
+      return quoted.strip if quoted.present?
+
+      match = message.to_s.match(/([A-Za-z0-9가-힣._-]+(?:\s+[A-Za-z0-9가-힣._-]+){0,2})\s*(?:이슈|issue|버그|bug|일감)\b/i)
+      return nil unless match
+
+      candidate = match[1].to_s.gsub(/\b(?:관련|현재|전체|모든|각|this|that|the)\b/i, '').strip
+      return nil if candidate.blank? || candidate.length < 2
+
+      candidate
+    end
+
+    def extract_filter_labels(message, korean)
+      text = message.to_s
+      downcased = text.downcase
+      labels = []
+      labels << (korean ? '미배정' : 'unassigned') if downcased.match?(/미배정|unassigned/)
+      labels << (korean ? '지연' : 'overdue') if downcased.match?(/overdue|지연|마감.*초과|기한.*지난/)
+      labels << (korean ? '버그' : 'bug') if downcased.match?(/\bbug\b|버그|defect/)
+      labels << (korean ? '버전 없음' : 'no fixed version') if downcased.match?(/버전\s*없|고정\s*버전\s*없|no\s+version|without\s+version/)
+      labels << (korean ? '기한 없음' : 'no due date') if downcased.match?(/기한\s*없|마감\s*없|due\s*없|no\s+due/)
+      labels << (korean ? '상위 없는 이슈' : 'root issues') if downcased.match?(/부모\s*없|상위\s*없|루트\s*이슈|root issue|no parent/)
+      labels.uniq.first(4)
+    end
+
+    def extract_relation_labels(message, korean)
+      text = message.to_s.downcase
+      labels = []
+      labels << (korean ? '선행 관계' : 'predecessor relations') if text.match?(/선행|predecessor|precedes|precede/)
+      labels << (korean ? '후행 관계' : 'successor relations') if text.match?(/후행|successor|follows|follow/)
+      labels << (korean ? '차단 관계' : 'blocking relations') if text.match?(/차단|blocker|blocked|blocks/)
+      labels << (korean ? '중복 관계' : 'duplicate relations') if text.match?(/중복|duplicate|duplicates|duplicated/)
+      labels << (korean ? '관련 링크' : 'related links') if text.match?(/관련|relates|related|링크|연결/)
+      labels.uniq.first(3)
+    end
+
+    def extract_mutation_labels(message, korean)
+      text = message.to_s
+      downcased = text.downcase
+      labels = []
+
+      if (status_value = extract_status_value(text))
+        labels << (korean ? "상태를 #{status_value}(으)로" : "set the status to #{status_value}")
+      elsif downcased.match?(/상태|status|qa|done|close|closed|reopen|review|resolved|종결|완료|검수/)
+        labels << (korean ? '상태 변경' : 'a status change')
+      end
+
+      if assignment_intent?(downcased)
+        assignee = extract_assignee_value(text)
+        labels << if assignee.present?
+                    korean ? "담당자를 #{assignee}(으)로" : "assign it to #{assignee}"
+                  else
+                    korean ? '담당자 변경' : 'an assignee change'
+                  end
+      end
+
+      version_label = extract_version_value(text)
+      if version_label.present?
+        labels << (korean ? "#{version_label}(으)로 변경" : "move it to #{version_label}")
+      elsif schedule_or_version_intent?(downcased)
+        labels << (korean ? '버전 또는 일정 변경' : 'a version or schedule change')
+      end
+
+      if downcased.match?(/기한|마감|due|start_date|시작일/)
+        labels << (korean ? '일정 필드 변경' : 'a date field change')
+      end
+
+      labels.uniq.first(4)
+    end
+
+    def extract_status_value(message)
+      patterns = [
+        /(?:상태|status)\s*(?:를|을)?\s*(?:to\s+)?([A-Za-z0-9가-힣_-]{2,30})(?:\s*(?:로|으로))?/i,
+        /(?:to|로|으로)\s*(qa|done|closed|close|open|reopen|review|resolved|검수|완료|종결)/i
+      ]
+
+      patterns.each do |pattern|
+        match = message.to_s.match(pattern)
+        return match[1] if match && match[1].present?
+      end
+
+      nil
+    end
+
+    def extract_assignee_value(message)
+      patterns = [
+        /([A-Za-z0-9가-힣._-]{2,30})\s*(?:에게|한테)\s*할당/,
+        /assign\s+(?:it\s+)?to\s+([A-Za-z0-9._-]{2,30})/i,
+        /담당자\s*(?:를|을)?\s*([A-Za-z0-9가-힣._-]{2,30})/i
+      ]
+
+      patterns.each do |pattern|
+        match = message.to_s.match(pattern)
+        return match[1] if match && match[1].present?
+      end
+
+      nil
+    end
+
+    def extract_version_value(message)
+      match = message.to_s.match(/(?:버전|version|마일스톤|milestone|스프린트|sprint)\s*[:#]?\s*([A-Za-z0-9._-]{2,40})/i)
+      return nil unless match
+
+      label = match[0].to_s.strip
+      label.presence
+    end
+
+    def extract_version_labels(message, korean)
+      value = extract_version_value(message)
+      return [] unless value.present?
+
+      [value]
+    end
+
+    def spreadsheet_source_phrase(context, korean)
+      files = context[:file_refs]
+      return files.join(', ') if files.any?
+
+      korean ? '업로드된 파일' : 'the uploaded files'
+    end
+
+    def search_scope_phrase(context, korean, fallback:)
+      labels = plan_labels(context, include_relations: false)
+      return labels.join(', ') if labels.any?
+
+      fallback
+    end
+
+    def target_scope_phrase(context, korean, fallback:)
+      refs = Array(context[:issue_refs])
+      labels = refs + Array(context[:subject]).compact + Array(context[:filters])
+      return labels.uniq.first(3).join(', ') if labels.any?
+
+      fallback
+    end
+
+    def exact_issue_phrase(context, korean, fallback:)
+      refs = Array(context[:issue_refs])
+      return refs.join(', ') if refs.any?
+
+      subject = context[:subject]
+      return korean ? "`#{subject}`에 해당하는 이슈" : "the issue matching `#{subject}`" if subject.present?
+
+      fallback
+    end
+
+    def relation_scope_phrase(context, korean, fallback:)
+      labels = Array(context[:relations])
+      return labels.join(', ') if labels.any?
+
+      fallback
+    end
+
+    def mutation_scope_phrase(context, korean, fallback:)
+      labels = Array(context[:mutations])
+      return labels.join(', ') if labels.any?
+
+      fallback
+    end
+
+    def analysis_scope_phrase(context, korean, fallback:)
+      labels = plan_labels(context, include_relations: false)
+      return labels.join(', ') if labels.any?
+
+      fallback
+    end
+
+    def version_scope_phrase(context, korean, fallback:)
+      labels = Array(context[:versions]) + Array(context[:issue_refs]) + Array(context[:subject]).compact
+      return labels.uniq.first(3).join(', ') if labels.any?
+
+      fallback
+    end
+
+    def conclusion_scope_phrase(context, korean, fallback:)
+      labels = Array(context[:relations]) + Array(context[:mutations]) + Array(context[:filters])
+      return labels.uniq.first(2).join(', ') if labels.any?
+
+      fallback
+    end
+
+    def plan_labels(context, include_relations:)
+      labels = Array(context[:issue_refs]) +
+               Array(context[:subject]).compact +
+               Array(context[:filters]) +
+               Array(context[:versions])
+      labels += Array(context[:relations]) if include_relations
+      labels.uniq.first(4)
     end
 
     def korean_message?(message)
