@@ -132,6 +132,7 @@ module RedmineTxMcp
           RedmineTxMcp::Tools::UserTool
           RedmineTxMcp::Tools::VersionTool
           RedmineTxMcp::Tools::EnumerationTool
+          RedmineTxMcp::Tools::SpreadsheetTool
         ].map(&:constantize)
       end
 

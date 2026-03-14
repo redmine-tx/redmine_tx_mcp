@@ -178,22 +178,10 @@ module RedmineTxMcp
         end
 
         def create_project(args)
+          return { error: "Not authorized to create projects" } unless User.current.allowed_to?(:add_project, nil, global: true)
+
           project = Project.new
-          project.name = args['name']
-          project.identifier = args['identifier']
-          project.description = args['description'] if args['description']
-          project.homepage = args['homepage'] if args['homepage']
-          project.is_public = args['is_public'] unless args['is_public'].nil?
-          project.parent_id = args['parent_id'] if args['parent_id']
-          project.inherit_members = args['inherit_members'] unless args['inherit_members'].nil?
-
-          if args['tracker_ids']
-            project.tracker_ids = args['tracker_ids']
-          end
-
-          if args['enabled_module_names']
-            project.enabled_module_names = args['enabled_module_names']
-          end
+          project.safe_attributes = project_safe_attributes(args)
 
           if project.save
             format_project_details(project)
@@ -204,23 +192,10 @@ module RedmineTxMcp
 
         def update_project(args)
           project = Project.visible.find(args['id'])
+          return { error: "Not authorized to edit this project" } unless User.current.allowed_to?(:edit_project, project)
 
-          project.name = args['name'] if args['name']
-          project.identifier = args['identifier'] if args['identifier']
-          project.description = args['description'] if args['description']
-          project.homepage = args['homepage'] if args['homepage']
-          project.is_public = args['is_public'] unless args['is_public'].nil?
-          project.parent_id = args['parent_id'] if args['parent_id']
-          project.inherit_members = args['inherit_members'] unless args['inherit_members'].nil?
+          project.safe_attributes = project_safe_attributes(args)
           project.status = args['status'] if args['status']
-
-          if args['tracker_ids']
-            project.tracker_ids = args['tracker_ids']
-          end
-
-          if args['enabled_module_names']
-            project.enabled_module_names = args['enabled_module_names']
-          end
 
           if project.save
             format_project_details(project)
@@ -233,6 +208,7 @@ module RedmineTxMcp
 
         def delete_project(args)
           project = Project.visible.find(args['id'])
+          return { error: "Not authorized to delete this project" } unless project.deletable?(User.current)
 
           if project.destroy
             { success: true, message: "Project deleted successfully" }
@@ -254,12 +230,12 @@ module RedmineTxMcp
 
         def add_project_member(args)
           project = Project.visible.find(args['project_id'])
+          return { error: "Not authorized to manage members in this project" } unless User.current.allowed_to?(:manage_members, project)
+
           user = User.find(args['user_id'])
 
-          member = Member.new
-          member.project = project
-          member.principal = user
-          member.role_ids = args['role_ids']
+          member = Member.find_or_initialize_by(project: project, principal: user)
+          member.set_editable_role_ids(args['role_ids'], User.current)
 
           if member.save
             format_response(member)
@@ -272,7 +248,10 @@ module RedmineTxMcp
 
         def remove_project_member(args)
           project = Project.visible.find(args['project_id'])
+          return { error: "Not authorized to manage members in this project" } unless User.current.allowed_to?(:manage_members, project)
+
           member = project.members.joins(:principal).where(principals: { id: args['user_id'] }).first
+          return { error: "Not authorized to remove this member" } if member && !member.deletable?(User.current)
 
           if member&.destroy
             { success: true, message: "Member removed successfully" }
@@ -305,6 +284,17 @@ module RedmineTxMcp
             members_count: project.members.count,
             issues_count: project.issues.count
           }
+        end
+
+        def project_safe_attributes(args)
+          attrs = {}
+          %w[name identifier description homepage].each do |key|
+            attrs[key] = args[key] if args.key?(key) && args[key].present?
+          end
+          %w[is_public parent_id inherit_members tracker_ids enabled_module_names].each do |key|
+            attrs[key] = args[key] if args.key?(key)
+          end
+          attrs
         end
       end
     end

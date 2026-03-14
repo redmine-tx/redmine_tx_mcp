@@ -150,7 +150,7 @@ module RedmineTxMcp
         end
 
         def get_version(args)
-          version = Version.find(args['id'])
+          version = Version.visible.find(args['id'])
           format_version(version, detailed: true)
         rescue ActiveRecord::RecordNotFound
           { error: "Version not found" }
@@ -158,14 +158,10 @@ module RedmineTxMcp
 
         def create_version(args)
           project = Project.visible.find(args['project_id'])
+          return { error: "Not authorized to manage versions in this project" } unless User.current.allowed_to?(:manage_versions, project)
 
           version = project.versions.build
-          version.name = args['name']
-          version.description = args['description'] if args['description']
-          version.status = args['status'] || 'open'
-          version.sharing = args['sharing'] || 'none'
-          version.effective_date = args['due_date'] if args['due_date']
-          version.wiki_page_title = args['wiki_page_title'] if args['wiki_page_title']
+          version.safe_attributes = version_safe_attributes(args, default_status: 'open', default_sharing: 'none')
 
           if version.save
             format_version(version)
@@ -177,14 +173,10 @@ module RedmineTxMcp
         end
 
         def update_version(args)
-          version = Version.find(args['id'])
+          version = Version.visible.find(args['id'])
+          return { error: "Not authorized to manage versions in this project" } unless User.current.allowed_to?(:manage_versions, version.project)
 
-          version.name = args['name'] if args['name']
-          version.description = args['description'] if args.key?('description')
-          version.status = args['status'] if args['status']
-          version.sharing = args['sharing'] if args['sharing']
-          version.effective_date = args['due_date'] if args.key?('due_date')
-          version.wiki_page_title = args['wiki_page_title'] if args.key?('wiki_page_title')
+          version.safe_attributes = version_safe_attributes(args)
 
           if version.save
             format_version(version)
@@ -196,7 +188,8 @@ module RedmineTxMcp
         end
 
         def delete_version(args)
-          version = Version.find(args['id'])
+          version = Version.visible.find(args['id'])
+          return { error: "Not authorized to manage versions in this project" } unless User.current.allowed_to?(:manage_versions, version.project)
 
           if version.deletable?
             version.destroy
@@ -209,7 +202,7 @@ module RedmineTxMcp
         end
 
         def get_version_statistics(args)
-          version = Version.find(args['id'])
+          version = Version.visible.find(args['id'])
           issues = version.fixed_issues.visible
 
           {
@@ -264,6 +257,17 @@ module RedmineTxMcp
           end
 
           result
+        end
+
+        def version_safe_attributes(args, default_status: nil, default_sharing: nil)
+          attrs = {}
+          attrs['name'] = args['name'] if args.key?('name') && args['name'].present?
+          attrs['description'] = args['description'] if args.key?('description')
+          attrs['status'] = args['status'] || default_status if args.key?('status') || default_status
+          attrs['sharing'] = args['sharing'] || default_sharing if args.key?('sharing') || default_sharing
+          attrs['due_date'] = args['due_date'] if args.key?('due_date')
+          attrs['wiki_page_title'] = args['wiki_page_title'] if args.key?('wiki_page_title')
+          attrs
         end
       end
     end

@@ -13,15 +13,20 @@ $LOAD_PATH.unshift REDMINE_TX_MCP_LIB
 # cleared by the autoloader. No top-level require to avoid double-load
 # when the plugin directory is a symlink.
 Rails.application.config.to_prepare do
+  load File.join(__dir__, 'app/models/redmine_tx_mcp/chatbot_conversation.rb')
+
   # Load in dependency order — base_tool before its subclasses
   %w[
     redmine_tx_mcp/llm_format_encoder
+    redmine_tx_mcp/chatbot_workspace
+    redmine_tx_mcp/spreadsheet_document
     redmine_tx_mcp/tools/base_tool
     redmine_tx_mcp/tools/issue_tool
     redmine_tx_mcp/tools/project_tool
     redmine_tx_mcp/tools/user_tool
     redmine_tx_mcp/tools/version_tool
     redmine_tx_mcp/tools/enumeration_tool
+    redmine_tx_mcp/tools/spreadsheet_tool
     redmine_tx_mcp/anthropic_models_service
     redmine_tx_mcp/openai_adapter
     redmine_tx_mcp/openai_models_service
@@ -62,9 +67,25 @@ Redmine issues follow a hierarchy: **Version (milestone) → Parent issues (feat
 1. **Version level:** `version_overview(version_id)` → see all parent issues and their progress at a glance
 2. **Parent issue level:** `issue_children_summary(parent_id)` → see children grouped by stage with alerts
 3. **Bug analysis:** `bug_statistics(project_id)` → aggregated bug dashboard with summary counts, daily trend, and breakdowns by category/assignee. Does NOT return individual bug records.
-4. **Drill down:** `issue_get(id, include_journals: true)` → read specific issue details and comments
+4. **Drill down:** `issue_get(id, include_journals: true)` → read one issue's detailed fields, parent issue, and current relations
 
 > **bug_statistics vs issue_list**: Use `bug_statistics` for aggregate questions (how many bugs, trends, who has the most, category breakdown). Use `issue_list(tracker_id: <bug_tracker_id>)` to get individual bug records. Statistics first, then drill into the list if needed.
+
+### issue_list vs issue_get
+- `issue_list` is for searching and browsing many issues. It returns lightweight summary rows and may be paginated.
+- `issue_list` rows include lightweight `relation_summary` hints such as whether the issue has predecessors, successors, or blockers, but not the full dependency graph.
+- `issue_get` is for one exact issue after you already know the ID. It returns detailed fields, parent issue, current relations, and optionally journals/children.
+- Do not treat `issue_list` rows as the full source of truth for one issue when the user asks about dependencies, parent/child context, comments, or exact current state. Switch to `issue_get(id)`.
+
+### Uploaded spreadsheet workflow
+- Uploaded spreadsheet files are isolated per user and chatbot session.
+- Start with `spreadsheet_list_uploads` when the user refers to an uploaded Excel/CSV/TSV file.
+- Then use `spreadsheet_list_sheets(file_name)` to inspect workbook structure.
+- Use `spreadsheet_preview_sheet(...)` for a small layout check before extracting larger structured data.
+- Use `spreadsheet_extract_rows(...)` for actual reasoning or issue updates based on the file contents.
+- If the user wants a downloadable Excel summary, call `spreadsheet_export_report(...)`.
+- Do not pretend you have read the whole workbook if you have only previewed part of it.
+- Do not dump an entire large sheet into the answer. Preview narrowly, extract only the needed rows, then summarize.
 
 ### Finding issues by name (natural language queries)
 Users often refer to issues/versions/projects by title, not ID (e.g. "은하계 재해 시즌2 3막 진행상황").
@@ -76,6 +97,22 @@ Users often refer to issues/versions/projects by title, not ID (e.g. "은하계 
 ### Finding issues by filters
 - Use `issue_list` with filters: `stage`, `is_open`, `is_overdue`, `assigned_to_id`, `sort`
 - Example: overdue open issues → `issue_list(project_id: X, is_overdue: true, sort: "due_date:asc")`
+- `issue_list` can also resolve human-readable names directly with `status_name`, `assigned_to_name`, `author_name`, `tracker_name`, `priority_name`, `category_name`, `fixed_version_name`
+- For null-state queries, use semantic booleans such as `is_unassigned`, `has_no_fixed_version`, `has_no_due_date`, `has_no_category`, `is_root_issue`
+- For relation-aware search, use `issue_list(related_to_id: X)` to find issues linked to one issue, then switch to `issue_get(X)` or `issue_relations_get(issue_id: X)` to inspect the exact relation types
+- If the user asks for all matching issues, prefer `issue_list(fetch_all: true)` before manually paging
+- If `issue_list` says there are more pages or includes a notice that only part of the result is shown, do not present the current page as the complete answer
+- Prefer exact `YYYY-MM-DD` dates in filters, but `issue_list` also accepts `today/yesterday/tomorrow` and `오늘/어제/내일`
+
+### Issue relations and dependencies
+- For one issue's dependency graph, use `issue_get(id)` or `issue_relations_get(issue_id)` instead of inferring from status text
+- `issue_relations_get(issue_id)` returns the current visible relations of that issue
+- `issue_relation_create(issue_id, related_issue_id, relation_type)` and `issue_relation_delete(id)` are available for dependency changes
+- `relation_type` is interpreted from the main issue's perspective in `issue_relations_get` and `issue_relation_create`
+- Examples:
+  - If issue `123` follows issue `50`, then `issue_relations_get(issue_id: 123)` will show relation_type `follows`
+  - To make issue `123` follow issue `50`, call `issue_relation_create(issue_id: 123, related_issue_id: 50, relation_type: "follows")`
+  - To inspect the predecessors/successors of `123`, first use `issue_get(123)` or `issue_relations_get(issue_id: 123)`, not `issue_list`
 
 ### Bug queries
 - **IMPORTANT: When the user mentions a version/sprint name (e.g. "0318", "Sprint 0318") in a bug query, you MUST first call `version_list(project_id, name: "0318")` to find the version_id, then pass it to `bug_statistics(project_id, version_id: <found_id>)`.** Without version_id, bug_statistics returns ALL bugs in the project, which is wrong when user asked about a specific milestone.
@@ -87,6 +124,27 @@ Users often refer to issues/versions/projects by title, not ID (e.g. "은하계 
 ### Before creating/updating
 - Look up valid IDs: `enum_trackers`, `enum_statuses`, `enum_priorities`, `enum_categories`
 - Required for issue_create: project_id, tracker_id, subject
+- If the same update applies to several issues, prefer `insert_bulk_update(issue_ids: [...])` instead of many repeated `issue_update` calls.
+
+### Tool availability and action requests
+- Never claim that a create/update/delete tool is unavailable unless it is truly absent from the tool definitions provided in this conversation.
+- If the user asks for a modification, first inspect the available tools and try the normal workflow instead of refusing too early.
+- Normal mutation workflow:
+  1. Identify the target issue/project/version.
+  2. Resolve any required IDs or valid values using lookup tools.
+  3. Apply the requested change.
+  4. Verify the final state with a read tool.
+- If some required detail is ambiguous, ask a short clarification question instead of pretending the capability does not exist.
+
+### Planning discipline
+- For any non-trivial task, especially modification requests or multi-step analysis, briefly show a 2-4 step plan before executing.
+- If the `plan_update` tool is available, use it to track that plan instead of keeping the plan only in natural language.
+- Each plan step should correspond to one concrete tool call.
+- Keep exactly one step as `in_progress` at a time.
+- Do not mark a step `completed` until the related tool call has actually returned.
+- Then work through the plan step by step with tools.
+- After finishing, explain what you checked, what you changed, and how you verified it.
+- For spreadsheet-driven work, the normal flow is: identify the uploaded file -> inspect sheets -> preview/extract the needed rows -> apply or analyze -> export a report if requested.
 
 ## Data Model Reference
 
@@ -157,7 +215,7 @@ PROMPT
   project_module :redmine_tx_mcp do
     permission :use_mcp_api, { mcp: [:index, :call_tool, :list_tools, :get_tool] }
     permission :admin_mcp, { mcp_admin: [:index, :models] }
-    permission :use_chatbot, { chatbot: [:index, :chat_submit, :reset] }
+    permission :use_chatbot, { chatbot: [:index, :create_conversation, :chat_submit, :reset, :download_report] }
   end
 
   menu :admin_menu, :mcp_status, {

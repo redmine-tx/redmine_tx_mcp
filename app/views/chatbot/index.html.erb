@@ -6,36 +6,122 @@
 <% end %>
 
 <div class="contextual">
-  <%= link_to "Reset Chat", "#", onclick: "resetChat(); return false;", class: "icon icon-reload" %>
+  <%= link_to "현재 대화 삭제", "#", onclick: "resetChat(); return false;", class: "icon icon-reload" %>
 </div>
 
 <h2>AI Assistant</h2>
 
-<div class="box">
-  <div id="chat-container" class="chat-container">
-    <div id="chat-messages" class="chat-messages">
-      <% @conversation_history.each do |msg| %>
-        <div class="message <%= msg['role'] %>">
-          <div class="message-content<%= ' markdown-body' if msg['role'] == 'assistant' %>"
-               <% if msg['role'] == 'assistant' %>data-raw="<%= h(msg['content']) %>"<% end %>>
-            <%= simple_format(h(msg['content'])) %>
-          </div>
-          <div class="message-time">
-            <%= Time.parse(msg['timestamp']).strftime("%H:%M") rescue '' %>
-          </div>
-        </div>
-      <% end %>
-    </div>
+<div class="chat-layout">
+  <div class="box chat-nav-sidebar">
+    <div class="chat-nav-panel">
+      <%= button_to '새 대화', create_chatbot_conversation_path(@project), method: :post,
+                    class: 'btn btn-primary chat-new-conversation-btn',
+                    form: { class: 'chat-new-conversation-form' } %>
 
-    <div class="chat-input-container">
-      <%= form_with url: chat_submit_chatbot_path(@project), local: true,
-                   html: { id: 'chat-form', class: 'chat-form' } do |form| %>
-        <div class="input-group">
-          <%= form.text_area :message, placeholder: "Ask me anything about this project...",
-                            rows: 2, class: 'chat-input', id: 'chat-input' %>
-          <%= form.submit "Send", class: 'btn btn-primary chat-send-btn', id: 'send-btn' %>
-        </div>
-      <% end %>
+      <div class="chat-session-section">
+        <h3>Recent Sessions</h3>
+        <p class="chat-session-help">현재 프로젝트에서 최근에 사용한 대화입니다.</p>
+        <ul id="chat-session-list" class="chat-session-list">
+          <% if @recent_chat_sessions.any? %>
+            <% @recent_chat_sessions.each do |chat_session| %>
+              <% touched_at = chat_session.last_message_at || chat_session.updated_at || chat_session.created_at %>
+              <li class="chat-session-item">
+                <a href="<%= project_chatbot_path(@project, conversation: chat_session.session_id) %>"
+                   class="chat-session-link<%= ' active' if chat_session.session_id == @chatbot_session_id %>">
+                  <span class="chat-session-title"><%= h(chat_session.display_title) %></span>
+                  <span class="chat-session-meta">
+                    <%= touched_at.to_date == Date.current ? touched_at.strftime('%H:%M') : touched_at.strftime('%m-%d') %>
+                  </span>
+                </a>
+              </li>
+            <% end %>
+          <% else %>
+            <li class="chat-session-empty">No recent sessions</li>
+          <% end %>
+        </ul>
+      </div>
+    </div>
+  </div>
+
+  <div class="box chat-shell">
+    <div id="chat-container" class="chat-container">
+      <div class="chat-session-header">
+        <h3 id="chat-session-heading"><%= h(@active_chat_session.display_title) %></h3>
+      </div>
+
+      <div id="chat-messages" class="chat-messages">
+        <% @conversation_history.each do |msg| %>
+          <div class="message <%= msg['role'] %>">
+            <div class="message-content<%= ' markdown-body' if msg['role'] == 'assistant' %>"
+                 <% if msg['role'] == 'assistant' %>data-raw="<%= h(msg['content']) %>"<% end %>>
+              <%= simple_format(h(msg['content'])) %>
+            </div>
+            <div class="message-time">
+              <%= Time.parse(msg['timestamp']).strftime("%H:%M") rescue '' %>
+            </div>
+          </div>
+        <% end %>
+      </div>
+
+      <div class="chat-input-container">
+        <%= form_with url: chat_submit_chatbot_path(@project), local: true,
+                     html: { id: 'chat-form', class: 'chat-form', multipart: true } do |form| %>
+          <%= hidden_field_tag :conversation, @chatbot_session_id, id: 'chat-conversation-id' %>
+          <div class="input-group">
+            <%= form.text_area :message, placeholder: "Ask about this project or use the uploaded spreadsheet...",
+                              rows: 2, class: 'chat-input', id: 'chat-input' %>
+            <%= form.submit "Send", class: 'btn btn-primary chat-send-btn', id: 'send-btn' %>
+          </div>
+
+          <div class="chat-file-row">
+            <label for="chat-files" class="chat-file-label">Attach spreadsheet</label>
+            <%= file_field_tag 'files[]', multiple: true, accept: '.xlsx,.csv,.tsv',
+                              class: 'chat-file-input', id: 'chat-files' %>
+            <div id="chat-files-help" class="chat-files-help">
+              Supports `.xlsx`, `.csv`, `.tsv`. Files are isolated to your current user/session.
+            </div>
+          </div>
+        <% end %>
+      </div>
+    </div>
+  </div>
+
+  <div class="box chat-sidebar">
+    <div class="workspace-panel">
+      <h3>Session Files</h3>
+      <p class="workspace-help">Uploaded files and generated reports are isolated per user and chatbot session.</p>
+
+      <div class="workspace-block">
+        <h4>Uploads</h4>
+        <ul id="workspace-uploads" class="workspace-list">
+          <% if @workspace_uploads.any? %>
+            <% @workspace_uploads.each do |file| %>
+              <li>
+                <span class="workspace-name"><%= h(file[:stored_name]) %></span>
+                <span class="workspace-meta"><%= h(file[:size_label]) %></span>
+              </li>
+            <% end %>
+          <% else %>
+            <li class="workspace-empty">No uploaded files</li>
+          <% end %>
+        </ul>
+      </div>
+
+      <div class="workspace-block">
+        <h4>Reports</h4>
+        <ul id="workspace-reports" class="workspace-list">
+          <% if @workspace_reports.any? %>
+            <% @workspace_reports.each do |file| %>
+              <li>
+                <a href="<%= h(file[:download_path]) %>" class="workspace-link"><%= h(file[:stored_name]) %></a>
+                <span class="workspace-meta"><%= h(file[:size_label]) %></span>
+              </li>
+            <% end %>
+          <% else %>
+            <li class="workspace-empty">No generated reports</li>
+          <% end %>
+        </ul>
+      </div>
     </div>
   </div>
 </div>
@@ -65,10 +151,13 @@ function renderExistingMarkdown() {
 function initializeChatbot() {
   var form = document.getElementById('chat-form');
   var input = document.getElementById('chat-input');
+  var fileInput = document.getElementById('chat-files');
+  var fileHelp = document.getElementById('chat-files-help');
   var sendBtn = document.getElementById('send-btn');
   var csrfToken = document.querySelector('meta[name="csrf-token"]').getAttribute('content');
 
   input.focus();
+  updateSelectedFiles(fileInput, fileHelp);
 
   input.addEventListener('keydown', function(e) {
     if (e.key === 'Enter' && !e.shiftKey) {
@@ -77,48 +166,63 @@ function initializeChatbot() {
     }
   });
 
+  fileInput.addEventListener('change', function() {
+    updateSelectedFiles(fileInput, fileHelp);
+  });
+
   form.addEventListener('submit', function(e) {
     e.preventDefault();
 
     var message = input.value.trim();
-    if (!message) return;
+    var fileNames = selectedFileNames(fileInput);
+    if (!message && !fileNames.length) return;
+
+    var formData = new FormData(form);
+    var displayMessage = message || '[파일 업로드]';
+    if (fileNames.length) {
+      displayMessage += (message ? '\n' : ' ') + '[첨부 파일] ' + fileNames.join(', ');
+    }
+    addMessage('user', displayMessage);
 
     input.disabled = true;
+    fileInput.disabled = true;
     sendBtn.disabled = true;
     sendBtn.textContent = 'Sending...';
 
-    addMessage('user', message);
     input.value = '';
 
-    sendStreamingRequest(form.action, message, csrfToken)
+    sendStreamingRequest(form.action, formData, csrfToken)
       .finally(function() {
         input.disabled = false;
+        fileInput.disabled = false;
         sendBtn.disabled = false;
         sendBtn.textContent = 'Send';
+        fileInput.value = '';
+        updateSelectedFiles(fileInput, fileHelp);
         input.focus();
       });
   });
 }
 
-function sendStreamingRequest(url, message, csrfToken) {
+function sendStreamingRequest(url, formData, csrfToken) {
   var statusEl = showStatus('Connecting...');
 
   return fetch(url, {
     method: 'POST',
     headers: {
-      'Content-Type': 'application/json',
       'Accept': 'text/event-stream',
       'X-CSRF-Token': csrfToken
     },
-    body: JSON.stringify({ message: message })
+    body: formData
   })
   .then(function(response) {
     var contentType = response.headers.get('Content-Type') || '';
 
-    // If server returned JSON instead of SSE, fall back to non-streaming
     if (contentType.indexOf('application/json') !== -1) {
       return response.json().then(function(data) {
         removeStatus(statusEl);
+        if (data.workspace) updateWorkspacePanels(data.workspace);
+        if (data.sessions) updateSessionList(data.sessions);
         if (data.success) {
           addMessage('assistant', data.message);
         } else {
@@ -127,7 +231,6 @@ function sendStreamingRequest(url, message, csrfToken) {
       });
     }
 
-    // Stream SSE response
     var reader = response.body.getReader();
     var decoder = new TextDecoder();
     var buffer = '';
@@ -150,7 +253,7 @@ function sendStreamingRequest(url, message, csrfToken) {
               try {
                 var event = JSON.parse(lines[j].substring(6));
                 handleStreamEvent(event, statusEl);
-              } catch(e) {}
+              } catch (e) {}
             }
           }
         }
@@ -170,15 +273,24 @@ function sendStreamingRequest(url, message, csrfToken) {
 
 function handleStreamEvent(event, statusEl) {
   switch (event.type) {
+    case 'plan':
+      addMessage('assistant', formatPlanMessage(event));
+      updateStatus(statusEl, event.status || 'Working through the plan...');
+      break;
     case 'thinking':
       updateStatus(statusEl, event.message);
       break;
     case 'tool_call':
-      var toolLabel = formatToolName(event.tool);
-      updateStatus(statusEl, 'Calling ' + toolLabel + '...');
+      updateStatus(statusEl, 'Calling ' + formatToolName(event.tool) + '...');
       break;
     case 'tool_result':
       updateStatus(statusEl, formatToolName(event.tool) + ' done');
+      break;
+    case 'workspace':
+      updateWorkspacePanels(event.workspace || {});
+      break;
+    case 'sessions':
+      updateSessionList(event.sessions || {});
       break;
     case 'answer':
       removeStatus(statusEl);
@@ -194,9 +306,106 @@ function handleStreamEvent(event, statusEl) {
   }
 }
 
+function updateWorkspacePanels(workspace) {
+  renderWorkspaceList('workspace-uploads', workspace.uploads || [], false);
+  renderWorkspaceList('workspace-reports', workspace.reports || [], true);
+}
+
+function updateSessionList(payload) {
+  payload = payload || {};
+  renderSessionList(payload.items || [], payload.active_session_id || '');
+}
+
+function renderSessionList(items, activeSessionId) {
+  var list = document.getElementById('chat-session-list');
+  if (!list) return;
+
+  if (!items.length) {
+    list.innerHTML = '<li class="chat-session-empty">No recent sessions</li>';
+    return;
+  }
+
+  var html = [];
+  var activeTitle = '';
+
+  for (var i = 0; i < items.length; i++) {
+    var item = items[i] || {};
+    var active = item.session_id === activeSessionId || item.active;
+    if (active && item.title) activeTitle = item.title;
+
+    html.push(
+      '<li class="chat-session-item">' +
+        '<a href="' + escapeHtml(item.path || '#') + '" class="chat-session-link' + (active ? ' active' : '') + '">' +
+          '<span class="chat-session-title">' + escapeHtml(item.title || '새 대화') + '</span>' +
+          '<span class="chat-session-meta">' + escapeHtml(item.updated_label || '') + '</span>' +
+        '</a>' +
+      '</li>'
+    );
+  }
+
+  list.innerHTML = html.join('');
+  updateConversationField(activeSessionId);
+  updateSessionHeading(activeTitle || '새 대화');
+}
+
+function renderWorkspaceList(elementId, items, linkItems) {
+  var list = document.getElementById(elementId);
+  if (!list) return;
+
+  if (!items.length) {
+    list.innerHTML = '<li class="workspace-empty">' + (linkItems ? 'No generated reports' : 'No uploaded files') + '</li>';
+    return;
+  }
+
+  var html = [];
+  for (var i = 0; i < items.length; i++) {
+    var item = items[i];
+    var label = escapeHtml(item.stored_name || '');
+    var meta = escapeHtml(item.size_label || '');
+    if (linkItems && item.download_path) {
+      html.push('<li><a class="workspace-link" href="' + escapeHtml(item.download_path) + '">' + label + '</a><span class="workspace-meta">' + meta + '</span></li>');
+    } else {
+      html.push('<li><span class="workspace-name">' + label + '</span><span class="workspace-meta">' + meta + '</span></li>');
+    }
+  }
+
+  list.innerHTML = html.join('');
+}
+
+function selectedFileNames(fileInput) {
+  if (!fileInput || !fileInput.files) return [];
+  var names = [];
+  for (var i = 0; i < fileInput.files.length; i++) {
+    names.push(fileInput.files[i].name);
+  }
+  return names;
+}
+
+function updateSelectedFiles(fileInput, fileHelp) {
+  if (!fileHelp) return;
+  var names = selectedFileNames(fileInput);
+  if (!names.length) {
+    fileHelp.textContent = 'Supports .xlsx, .csv, .tsv. Files are isolated to your current user/session.';
+    return;
+  }
+  fileHelp.textContent = 'Selected: ' + names.join(', ');
+}
+
 function formatToolName(name) {
   if (!name) return 'tool';
   return name.replace(/_/g, ' ');
+}
+
+function formatPlanMessage(event) {
+  var title = event.title || 'Plan';
+  var steps = Array.isArray(event.steps) ? event.steps : [];
+  var lines = ['**' + title + '**'];
+
+  for (var i = 0; i < steps.length; i++) {
+    lines.push((i + 1) + '. ' + steps[i]);
+  }
+
+  return lines.join('\n');
 }
 
 function showStatus(text) {
@@ -230,7 +439,7 @@ function addMessage(role, content) {
   messageDiv.className = 'message ' + role;
 
   var now = new Date();
-  var timeStr = now.toLocaleTimeString([], {hour: '2-digit', minute:'2-digit'});
+  var timeStr = now.toLocaleTimeString([], { hour: '2-digit', minute: '2-digit' });
 
   var contentDiv = document.createElement('div');
   if (role === 'assistant') {
@@ -252,6 +461,16 @@ function addMessage(role, content) {
   container.scrollTop = container.scrollHeight;
 }
 
+function updateSessionHeading(title) {
+  var heading = document.getElementById('chat-session-heading');
+  if (heading) heading.textContent = title || '새 대화';
+}
+
+function updateConversationField(sessionId) {
+  var input = document.getElementById('chat-conversation-id');
+  if (input && sessionId) input.value = sessionId;
+}
+
 function escapeHtml(text) {
   var div = document.createElement('div');
   div.textContent = text;
@@ -259,15 +478,36 @@ function escapeHtml(text) {
 }
 
 function resetChat() {
-  if (confirm('Are you sure you want to reset the chat?')) {
+  if (confirm('현재 대화를 삭제하시겠습니까?')) {
     fetch('<%= reset_chatbot_path(@project) %>', {
       method: 'POST',
       headers: {
-        'X-CSRF-Token': document.querySelector('meta[name="csrf-token"]').getAttribute('content')
-      }
+        'X-CSRF-Token': document.querySelector('meta[name="csrf-token"]').getAttribute('content'),
+        'Content-Type': 'application/x-www-form-urlencoded; charset=UTF-8'
+      },
+      body: 'conversation=' + encodeURIComponent((document.getElementById('chat-conversation-id') || {}).value || '')
     })
-    .then(function() {
-      location.reload();
+    .then(function(response) {
+      return response.json().then(function(data) {
+        return { ok: response.ok, data: data };
+      });
+    })
+    .then(function(result) {
+      if (result.ok) {
+        location.href = result.data.redirect_url || '<%= project_chatbot_path(@project) %>';
+        return;
+      }
+
+      if (result.data && result.data.redirect_url) {
+        alert(result.data.error || '세션을 찾을 수 없습니다.');
+        location.href = result.data.redirect_url;
+        return;
+      }
+
+      throw new Error((result.data && result.data.error) || '대화를 삭제하지 못했습니다.');
+    })
+    .catch(function(error) {
+      alert(error.message || '대화를 삭제하지 못했습니다.');
     });
   }
 }

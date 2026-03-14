@@ -93,10 +93,23 @@ For remote access from other machines (like Windows Claude), use the HTTP MCP en
 
 **Endpoint**: `POST http://your-redmine-server.com/mcp/http`
 
+**Browser session mode**
+
+If the caller is already logged into Redmine in the same browser, the plugin can use the existing Redmine session instead of a user API key. In that case:
+
+- the user must have the `use_mcp_api` permission
+- requests must be same-origin and include a valid CSRF token
+- no `X-Redmine-API-Key` header is required
+
+**External client mode**
+
+For non-browser clients that do not share the Redmine login session, keep using a plugin API key plus a Redmine user API key.
+
 **Headers**:
 ```
 Content-Type: application/json
 Authorization: Bearer YOUR_API_KEY
+X-Redmine-API-Key: USER_API_KEY
 ```
 
 **Example Request**:
@@ -104,6 +117,7 @@ Authorization: Bearer YOUR_API_KEY
 curl -X POST "http://your-redmine-server.com/mcp/http" \
   -H "Content-Type: application/json" \
   -H "Authorization: Bearer YOUR_API_KEY" \
+  -H "X-Redmine-API-Key: USER_API_KEY" \
   -d '{
     "jsonrpc": "2.0",
     "id": 1,
@@ -127,6 +141,7 @@ ssh -L 3001:localhost:3000 user@your-ubuntu-server.com
       "command": "curl",
       "args": ["-X", "POST", "http://localhost:3001/mcp/http",
                "-H", "Authorization: Bearer YOUR_API_KEY",
+               "-H", "X-Redmine-API-Key: USER_API_KEY",
                "-H", "Content-Type: application/json",
                "-d", "@-"]
     }

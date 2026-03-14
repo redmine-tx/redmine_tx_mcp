@@ -184,6 +184,8 @@ module RedmineTxMcp
         end
 
         def create_user(args)
+          return { error: "Not authorized to manage users" } unless User.current.admin?
+
           user = User.new
           user.login = args['login']
           user.firstname = args['firstname']
@@ -204,6 +206,8 @@ module RedmineTxMcp
         end
 
         def update_user(args)
+          return { error: "Not authorized to manage users" } unless User.current.admin?
+
           user = User.visible.find(args['id'])
 
           user.login = args['login'] if args['login']
@@ -227,6 +231,8 @@ module RedmineTxMcp
         end
 
         def delete_user(args)
+          return { error: "Not authorized to manage users" } unless User.current.admin?
+
           user = User.visible.find(args['id'])
 
           if user.destroy

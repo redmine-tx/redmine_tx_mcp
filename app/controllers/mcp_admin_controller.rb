@@ -12,7 +12,7 @@ class McpAdminController < ApplicationController
       logger.error "Error: #{@mcp_status[:error]}"
       logger.error "Server Loaded: #{@mcp_status[:server_loaded]}"
       logger.error "Tools Loaded: #{@mcp_status[:tools_loaded]}"
-      logger.error "Settings: #{@mcp_status[:settings]}"
+      logger.error "Settings: #{redacted_settings_for_log(@mcp_status[:settings]).inspect}"
       logger.error "========================"
 
       # Also output to STDERR to ensure we see it
@@ -68,7 +68,8 @@ class McpAdminController < ApplicationController
           project_tool: !!defined?(RedmineTxMcp::Tools::ProjectTool),
           user_tool: !!defined?(RedmineTxMcp::Tools::UserTool),
           version_tool: !!defined?(RedmineTxMcp::Tools::VersionTool),
-          enumeration_tool: !!defined?(RedmineTxMcp::Tools::EnumerationTool)
+          enumeration_tool: !!defined?(RedmineTxMcp::Tools::EnumerationTool),
+          spreadsheet_tool: !!defined?(RedmineTxMcp::Tools::SpreadsheetTool)
         },
         settings: (Setting.plugin_redmine_tx_mcp rescue {})
       }
@@ -84,7 +85,8 @@ class McpAdminController < ApplicationController
           project_tool: false,
           user_tool: false,
           version_tool: false,
-          enumeration_tool: false
+          enumeration_tool: false,
+          spreadsheet_tool: false
         },
         settings: {}
       }
@@ -98,11 +100,22 @@ class McpAdminController < ApplicationController
         RedmineTxMcp::Tools::ProjectTool,
         RedmineTxMcp::Tools::UserTool,
         RedmineTxMcp::Tools::VersionTool,
-        RedmineTxMcp::Tools::EnumerationTool
+        RedmineTxMcp::Tools::EnumerationTool,
+        RedmineTxMcp::Tools::SpreadsheetTool
       ].flat_map(&:available_tools)
     rescue => e
       Rails.logger.error "Failed to load MCP tools: #{e.message}"
       []
     end
+  end
+
+  def redacted_settings_for_log(settings)
+    settings.to_h.each_with_object({}) do |(key, value), memo|
+      memo[key] = sensitive_setting_key?(key) && value.present? ? '[FILTERED]' : value
+    end
+  end
+
+  def sensitive_setting_key?(key)
+    key.to_s.match?(/(?:\A|_)(api_key|token|secret|password)\z/)
   end
 end

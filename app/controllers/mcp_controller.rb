@@ -16,7 +16,9 @@ class McpController < ApplicationController
       RedmineTxMcp::Tools::IssueTool,
       RedmineTxMcp::Tools::ProjectTool,
       RedmineTxMcp::Tools::UserTool,
-      RedmineTxMcp::Tools::VersionTool
+      RedmineTxMcp::Tools::VersionTool,
+      RedmineTxMcp::Tools::EnumerationTool,
+      RedmineTxMcp::Tools::SpreadsheetTool
     ].flat_map(&:available_tools)
 
     render json: {
@@ -31,7 +33,9 @@ class McpController < ApplicationController
       RedmineTxMcp::Tools::IssueTool,
       RedmineTxMcp::Tools::ProjectTool,
       RedmineTxMcp::Tools::UserTool,
-      RedmineTxMcp::Tools::VersionTool
+      RedmineTxMcp::Tools::VersionTool,
+      RedmineTxMcp::Tools::EnumerationTool,
+      RedmineTxMcp::Tools::SpreadsheetTool
     ].flat_map(&:available_tools)
 
     tool = all_tools.find { |t| t[:name] == tool_name }
@@ -47,9 +51,6 @@ class McpController < ApplicationController
     tool_name = params[:name]
     arguments = params[:arguments] || {}
 
-    # Set current user for Redmine operations
-    User.current = User.find(session[:user_id])
-
     result = case tool_name
              when /^issue_/
                RedmineTxMcp::Tools::IssueTool.call_tool(tool_name, arguments)
@@ -59,6 +60,10 @@ class McpController < ApplicationController
                RedmineTxMcp::Tools::UserTool.call_tool(tool_name, arguments)
              when /^version_/
                RedmineTxMcp::Tools::VersionTool.call_tool(tool_name, arguments)
+             when /^enum_/
+               RedmineTxMcp::Tools::EnumerationTool.call_tool(tool_name, arguments)
+             when /^spreadsheet_/
+               RedmineTxMcp::Tools::SpreadsheetTool.call_tool(tool_name, arguments)
              else
                { error: "Unknown tool: #{tool_name}" }
              end
@@ -80,7 +85,10 @@ class McpController < ApplicationController
     [
       RedmineTxMcp::Tools::IssueTool,
       RedmineTxMcp::Tools::ProjectTool,
-      RedmineTxMcp::Tools::UserTool
+      RedmineTxMcp::Tools::UserTool,
+      RedmineTxMcp::Tools::VersionTool,
+      RedmineTxMcp::Tools::EnumerationTool,
+      RedmineTxMcp::Tools::SpreadsheetTool
     ].sum { |tool_class| tool_class.available_tools.count }
   end
 end

@@ -16,9 +16,9 @@ module RedmineTxMcp
           return (data[:error] || data["error"]).to_s
         end
 
-        # Paginated response: {items: [...], pagination: {...}}
-        if data.key?(:items) && data.key?(:pagination)
-          return encode_paginated(data[:items], data[:pagination])
+        # Paginated response: {items: [...], pagination: {...}, ...metadata}
+        if paginated_hash?(data)
+          return encode_paginated_hash(data)
         end
 
         encode_hash(data)
@@ -37,10 +37,33 @@ module RedmineTxMcp
 
     # ─── Paginated response ──────────────────────────────
 
+    def paginated_hash?(data)
+      (data.key?(:items) || data.key?("items")) && (data.key?(:pagination) || data.key?("pagination"))
+    end
+
+    def encode_paginated_hash(data)
+      items = data[:items] || data["items"]
+      pagination = data[:pagination] || data["pagination"] || {}
+      lines = [encode_paginated(items, pagination)]
+
+      extras = data.each_with_object({}) do |(key, value), memo|
+        next if %w[items pagination].include?(key.to_s)
+        memo[key] = value
+      end
+      extras_text = encode_hash(extras)
+      lines << "" << extras_text if extras_text.present?
+
+      lines.join("\n")
+    end
+
     def encode_paginated(items, pagination)
       lines = []
       p = pagination
-      lines << "page: #{p[:page]} | per_page: #{p[:per_page]} | total: #{p[:total_count]} | pages: #{p[:total_pages]}"
+      page = p[:page] || p["page"]
+      per_page = p[:per_page] || p["per_page"]
+      total_count = p[:total_count] || p["total_count"]
+      total_pages = p[:total_pages] || p["total_pages"]
+      lines << "page: #{page} | per_page: #{per_page} | total: #{total_count} | pages: #{total_pages}"
 
       if items.is_a?(Array) && items.any?
         if uniform_hash_array?(items)

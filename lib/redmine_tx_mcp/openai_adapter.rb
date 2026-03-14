@@ -224,7 +224,29 @@ module RedmineTxMcp
           max_tokens: anthropic_req[:max_tokens] || anthropic_req['max_tokens'] || 4000
         }
         body[:tools] = tools if tools.present?
+        tool_choice = anthropic_req[:tool_choice] || anthropic_req['tool_choice']
+        body[:tool_choice] = convert_tool_choice(tool_choice) if tool_choice.present?
         body
+      end
+
+      def convert_tool_choice(tool_choice)
+        choice_type = tool_choice[:type] || tool_choice['type']
+        case choice_type
+        when 'auto'
+          'auto'
+        when 'any'
+          'required'
+        when 'tool'
+          tool_name = tool_choice[:name] || tool_choice['name']
+          return nil unless tool_name.present?
+
+          {
+            type: 'function',
+            function: { name: tool_name }
+          }
+        else
+          nil
+        end
       end
 
       # ─── OpenAI response → Anthropic response ──────────────────
