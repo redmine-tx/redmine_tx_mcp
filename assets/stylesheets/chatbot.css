@@ -167,6 +167,109 @@
   border-bottom-left-radius: 4px;
 }
 
+.plan-message {
+  max-width: 88%;
+}
+
+.plan-card {
+  background: #f2f7fb !important;
+  border: 1px solid #d5e3ef !important;
+  border-bottom-left-radius: 4px;
+}
+
+.plan-card-header {
+  display: flex;
+  align-items: flex-start;
+  gap: 12px;
+}
+
+.plan-card-meta {
+  min-width: 0;
+}
+
+.plan-title {
+  font-size: 14px;
+  font-weight: 700;
+  color: #223;
+}
+
+.plan-status {
+  margin-top: 4px;
+  color: #5d6b78;
+  font-size: 12px;
+  line-height: 1.5;
+}
+
+.plan-icon {
+  width: 12px;
+  height: 12px;
+  margin-top: 4px;
+  border-radius: 999px;
+  background: #92a2b3;
+  box-shadow: 0 0 0 4px rgba(146, 162, 179, 0.16);
+  transition: background 0.2s ease, box-shadow 0.2s ease;
+  flex-shrink: 0;
+}
+
+.plan-message.is-pending .plan-icon {
+  background: #92a2b3;
+  box-shadow: 0 0 0 4px rgba(146, 162, 179, 0.16);
+}
+
+.plan-message.is-working .plan-icon {
+  background: #2f7fd1;
+  box-shadow: 0 0 0 4px rgba(47, 127, 209, 0.18);
+  animation: planPulse 1.1s ease-in-out infinite;
+}
+
+.plan-message.is-done .plan-icon {
+  background: #2d8b57;
+  box-shadow: 0 0 0 4px rgba(45, 139, 87, 0.18);
+}
+
+.plan-message.is-blocked .plan-icon {
+  background: #c74646;
+  box-shadow: 0 0 0 4px rgba(199, 70, 70, 0.18);
+}
+
+.plan-steps {
+  margin: 12px 0 0;
+  padding-left: 18px;
+}
+
+.plan-step {
+  margin: 8px 0;
+  color: #2d3a45;
+}
+
+.plan-step-badge {
+  display: inline-block;
+  min-width: 42px;
+  margin-right: 8px;
+  padding: 1px 7px;
+  border-radius: 999px;
+  background: #e0e8ef;
+  color: #55616e;
+  font-size: 11px;
+  font-weight: 700;
+  vertical-align: middle;
+}
+
+.plan-step.in_progress .plan-step-badge {
+  background: #d9ebfb;
+  color: #2f7fd1;
+}
+
+.plan-step.completed .plan-step-badge,
+.plan-step.skipped .plan-step-badge {
+  background: #dff1e7;
+  color: #2d8b57;
+}
+
+.plan-step-text {
+  vertical-align: middle;
+}
+
 .message-time {
   font-size: 11px;
   color: #666;
@@ -507,6 +610,18 @@
 
 @keyframes spin {
   to { transform: rotate(360deg); }
+}
+
+@keyframes planPulse {
+  0%,
+  100% {
+    transform: scale(1);
+    box-shadow: 0 0 0 4px rgba(47, 127, 209, 0.18);
+  }
+  50% {
+    transform: scale(1.08);
+    box-shadow: 0 0 0 6px rgba(47, 127, 209, 0.12);
+  }
 }
 
 .status-text {

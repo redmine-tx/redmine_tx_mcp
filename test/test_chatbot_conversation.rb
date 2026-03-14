@@ -63,4 +63,32 @@ class ChatbotConversationTest < ActiveSupport::TestCase
     assert_equal chatbot_state, conversation.chatbot_state_payload
     assert_equal 'hello', conversation.display_title
   end
+
+  test "persist_snapshot retries with utf8mb3-safe payload on incorrect string value" do
+    conversation = RedmineTxMcp::ChatbotConversation.create!(
+      user_id: 1,
+      project_id: 1,
+      session_id: SecureRandom.hex(8)
+    )
+
+    attempts = []
+    conversation.define_singleton_method(:update!) do |attrs|
+      attempts << attrs.deep_dup
+      raise ActiveRecord::StatementInvalid, 'Mysql2::Error: Incorrect string value' if attempts.size == 1
+
+      true
+    end
+
+    conversation.persist_snapshot!(
+      display_history: [{ 'role' => 'assistant', 'content' => '🐛 bug fixed', 'timestamp' => '10:00' }],
+      chatbot_state: { 'conversation_history' => [{ 'role' => 'assistant', 'content' => '🐛 bug fixed' }] },
+      title_hint: '이모지 🐛 제목'
+    )
+
+    assert_equal 2, attempts.size
+    assert_includes attempts.first[:display_history_data], '🐛'
+    refute_includes attempts.last[:display_history_data], '🐛'
+    assert_includes attempts.last[:display_history_data], '? bug fixed'
+    assert_equal '이모지 ? 제목', attempts.last[:title]
+  end
 end

@@ -36,7 +36,7 @@ module RedmineTxMcp
       attrs = { last_message_at: touched_at }
       normalized = self.class.normalize_title(title_hint)
       attrs[:title] = normalized if normalized.present? && placeholder_title?
-      update!(attrs)
+      persist_with_mysql_fallback!(attrs)
     end
 
     def persist_snapshot!(display_history:, chatbot_state:, title_hint: nil, touched_at: Time.current)
@@ -47,7 +47,7 @@ module RedmineTxMcp
       }
       normalized = self.class.normalize_title(title_hint)
       attrs[:title] = normalized if normalized.present? && placeholder_title?
-      update!(attrs)
+      persist_with_mysql_fallback!(attrs)
     end
 
     def self.ensure_for!(user_id:, project_id:, session_id:)
@@ -73,6 +73,34 @@ module RedmineTxMcp
       JSON.parse(raw)
     rescue JSON::ParserError
       fallback
+    end
+
+    def persist_with_mysql_fallback!(attrs)
+      update!(attrs)
+    rescue ActiveRecord::StatementInvalid => e
+      raise unless mysql_incorrect_string_value?(e)
+
+      Rails.logger.warn('[ChatbotConversation] Retrying persistence with utf8mb3-safe content') if defined?(Rails) && Rails.respond_to?(:logger) && Rails.logger
+      update!(sanitize_for_mysql_utf8mb3(attrs))
+    end
+
+    def mysql_incorrect_string_value?(error)
+      error.message.to_s.include?('Incorrect string value')
+    end
+
+    def sanitize_for_mysql_utf8mb3(value)
+      case value
+      when String
+        value.gsub(/[\u{10000}-\u{10FFFF}]/, '?')
+      when Array
+        value.map { |item| sanitize_for_mysql_utf8mb3(item) }
+      when Hash
+        value.each_with_object({}) do |(key, item), memo|
+          memo[key] = sanitize_for_mysql_utf8mb3(item)
+        end
+      else
+        value
+      end
     end
   end
 end

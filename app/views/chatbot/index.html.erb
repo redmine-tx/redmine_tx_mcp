@@ -125,6 +125,8 @@
 </div>
 
 <script type="text/javascript">
+var activePlanMessageEl = null;
+
 document.addEventListener('DOMContentLoaded', function() {
   renderExistingMarkdown();
   initializeChatbot();
@@ -181,6 +183,7 @@ function initializeChatbot() {
       displayMessage += (message ? '\n' : ' ') + '[첨부 파일] ' + fileNames.join(', ');
     }
     addMessage('user', displayMessage);
+    activePlanMessageEl = null;
 
     input.disabled = true;
     fileInput.disabled = true;
@@ -272,7 +275,7 @@ function sendStreamingRequest(url, formData, csrfToken) {
 function handleStreamEvent(event, statusEl) {
   switch (event.type) {
     case 'plan':
-      addMessage('assistant', formatPlanMessage(event));
+      upsertPlanMessage(event);
       updateStatus(statusEl, event.status || 'Working through the plan...');
       break;
     case 'thinking':
@@ -291,14 +294,17 @@ function handleStreamEvent(event, statusEl) {
       updateSessionList(event.sessions || {});
       break;
     case 'answer':
+      finalizePlanMessage('done');
       removeStatus(statusEl);
       addMessage('assistant', event.message);
       break;
     case 'error':
+      finalizePlanMessage('blocked', event.message || 'An error occurred');
       removeStatus(statusEl);
       addMessage('error', event.message || 'An error occurred');
       break;
     case 'done':
+      finalizePlanMessage('done');
       removeStatus(statusEl);
       break;
   }
@@ -394,16 +400,136 @@ function formatToolName(name) {
   return name.replace(/_/g, ' ');
 }
 
-function formatPlanMessage(event) {
-  var title = event.title || 'Plan';
-  var steps = Array.isArray(event.steps) ? event.steps : [];
-  var lines = ['**' + title + '**'];
+function createPlanMessage() {
+  var container = document.getElementById('chat-messages');
+  var messageDiv = document.createElement('div');
+  messageDiv.className = 'message assistant plan-message is-pending';
+  messageDiv.innerHTML =
+    '<div class="message-content plan-card">' +
+      '<div class="plan-card-header">' +
+        '<span class="plan-icon" aria-hidden="true"></span>' +
+        '<div class="plan-card-meta">' +
+          '<div class="plan-title"></div>' +
+          '<div class="plan-status"></div>' +
+        '</div>' +
+      '</div>' +
+      '<ol class="plan-steps"></ol>' +
+    '</div>' +
+    '<div class="message-time"></div>';
 
-  for (var i = 0; i < steps.length; i++) {
-    lines.push((i + 1) + '. ' + steps[i]);
+  container.appendChild(messageDiv);
+  container.scrollTop = container.scrollHeight;
+  return messageDiv;
+}
+
+function upsertPlanMessage(event) {
+  if (!activePlanMessageEl || !activePlanMessageEl.parentNode) {
+    activePlanMessageEl = createPlanMessage();
   }
 
-  return lines.join('\n');
+  var titleEl = activePlanMessageEl.querySelector('.plan-title');
+  var statusEl = activePlanMessageEl.querySelector('.plan-status');
+  var stepsEl = activePlanMessageEl.querySelector('.plan-steps');
+  var timeEl = activePlanMessageEl.querySelector('.message-time');
+  var normalizedSteps = normalizePlanSteps(event.steps);
+
+  titleEl.textContent = event.title || 'Plan';
+  statusEl.textContent = event.status || '계획을 진행 중입니다.';
+  stepsEl.innerHTML = renderPlanSteps(normalizedSteps);
+  setPlanMessageState(activePlanMessageEl, planStateFromSteps(normalizedSteps));
+  if (timeEl) timeEl.textContent = currentMessageTime();
+
+  var container = document.getElementById('chat-messages');
+  container.scrollTop = container.scrollHeight;
+}
+
+function normalizePlanSteps(steps) {
+  var normalized = [];
+  steps = Array.isArray(steps) ? steps : [];
+
+  for (var i = 0; i < steps.length; i++) {
+    var step = String(steps[i] || '');
+    var match = step.match(/^(pending|in_progress|completed|skipped):\s*(.+)$/);
+    if (match) {
+      normalized.push({ state: match[1], text: match[2] });
+    } else {
+      normalized.push({ state: 'pending', text: step });
+    }
+  }
+
+  return normalized;
+}
+
+function renderPlanSteps(steps) {
+  var html = [];
+
+  for (var i = 0; i < steps.length; i++) {
+    var step = steps[i] || {};
+    var state = step.state || 'pending';
+    var label = planStepLabel(state);
+    html.push(
+      '<li class="plan-step ' + escapeHtml(state) + '">' +
+        '<span class="plan-step-badge">' + escapeHtml(label) + '</span>' +
+        '<span class="plan-step-text">' + escapeHtml(step.text || '') + '</span>' +
+      '</li>'
+    );
+  }
+
+  return html.join('');
+}
+
+function planStepLabel(state) {
+  switch (state) {
+    case 'completed':
+      return 'Done';
+    case 'in_progress':
+      return 'Doing';
+    case 'skipped':
+      return 'Skip';
+    default:
+      return 'Plan';
+  }
+}
+
+function planStateFromSteps(steps) {
+  var hasPending = false;
+  var hasProgress = false;
+  var hasCompleted = false;
+
+  for (var i = 0; i < steps.length; i++) {
+    var state = (steps[i] || {}).state;
+    if (state === 'in_progress') hasProgress = true;
+    if (state === 'completed' || state === 'skipped') hasCompleted = true;
+    if (state === 'pending') hasPending = true;
+  }
+
+  if (hasProgress) return 'working';
+  if (steps.length && !hasPending) return 'done';
+  if (hasCompleted) return 'working';
+  return 'pending';
+}
+
+function setPlanMessageState(messageEl, state) {
+  if (!messageEl) return;
+  messageEl.classList.remove('is-pending', 'is-working', 'is-done', 'is-blocked');
+  messageEl.classList.add('is-' + state);
+}
+
+function finalizePlanMessage(state, statusText) {
+  if (!activePlanMessageEl || !activePlanMessageEl.parentNode) return;
+
+  setPlanMessageState(activePlanMessageEl, state || 'done');
+  if (statusText) {
+    var statusEl = activePlanMessageEl.querySelector('.plan-status');
+    if (statusEl) statusEl.textContent = statusText;
+  }
+
+  var timeEl = activePlanMessageEl.querySelector('.message-time');
+  if (timeEl) timeEl.textContent = currentMessageTime();
+}
+
+function currentMessageTime() {
+  return new Date().toLocaleTimeString([], { hour: '2-digit', minute: '2-digit' });
 }
 
 function showStatus(text) {
@@ -436,9 +562,6 @@ function addMessage(role, content) {
   var messageDiv = document.createElement('div');
   messageDiv.className = 'message ' + role;
 
-  var now = new Date();
-  var timeStr = now.toLocaleTimeString([], { hour: '2-digit', minute: '2-digit' });
-
   var contentDiv = document.createElement('div');
   if (role === 'assistant') {
     contentDiv.className = 'message-content markdown-body';
@@ -450,7 +573,7 @@ function addMessage(role, content) {
 
   var timeDiv = document.createElement('div');
   timeDiv.className = 'message-time';
-  timeDiv.textContent = timeStr;
+  timeDiv.textContent = currentMessageTime();
 
   messageDiv.appendChild(contentDiv);
   messageDiv.appendChild(timeDiv);
