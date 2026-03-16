@@ -116,6 +116,7 @@
         <%= form_with url: chat_submit_chatbot_path(@project), local: true,
                      html: { id: 'chat-form', class: 'chat-form', multipart: true } do |form| %>
           <%= hidden_field_tag :conversation, @chatbot_session_id, id: 'chat-conversation-id' %>
+          <%= hidden_field_tag :new_conversation, (@new_conversation_mode ? '1' : ''), id: 'chat-new-conversation' %>
           <div class="input-group">
             <%= form.text_area :message, placeholder: "Ask about this project or use the uploaded spreadsheet...",
                               rows: 2, class: 'chat-input', id: 'chat-input' %>
@@ -695,6 +696,8 @@ function updateSessionHeading(title) {
 function updateConversationField(sessionId) {
   var input = document.getElementById('chat-conversation-id');
   if (input && sessionId) input.value = sessionId;
+  var newConversationInput = document.getElementById('chat-new-conversation');
+  if (newConversationInput && sessionId) newConversationInput.value = '';
 }
 
 function escapeHtml(text) {

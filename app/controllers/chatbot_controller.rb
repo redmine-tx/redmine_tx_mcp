@@ -14,23 +14,26 @@ class ChatbotController < ApplicationController
   @@active_chats = 0
 
   def index
+    cleanup_empty_chat_conversations!
+    @new_conversation_mode = new_conversation_requested?
     @chatbot_session_id = resolve_active_session_id
     return if performed?
 
-    @active_chat_session = ensure_chat_conversation_record(@chatbot_session_id)
-    @conversation_history = get_display_history(@chatbot_session_id)
-    @workspace_uploads = current_workspace(@chatbot_session_id).list_uploads
-    @workspace_reports = current_workspace(@chatbot_session_id).list_reports
+    @active_chat_session = active_chat_session(@chatbot_session_id)
+    @conversation_history = @chatbot_session_id.present? ? get_display_history(@chatbot_session_id) : []
+    @workspace_uploads = @chatbot_session_id.present? ? current_workspace(@chatbot_session_id).list_uploads : []
+    @workspace_reports = @chatbot_session_id.present? ? current_workspace(@chatbot_session_id).list_reports : []
     @recent_chat_sessions = recent_chat_conversations
   end
 
   def create_conversation
-    sid = start_new_chat_session
-    redirect_to project_chatbot_path(@project, conversation: sid)
+    discard_active_empty_session!
+    session[session_key] = nil
+    redirect_to project_chatbot_path(@project, new_conversation: '1')
   end
 
   def chat_submit
-    sid = request_chat_session_id
+    sid = request_chat_session_id(create_if_missing: true)
     return if performed?
 
     message = params[:message].to_s
@@ -101,7 +104,7 @@ class ChatbotController < ApplicationController
   end
 
   def reset
-    session_id = request_chat_session_id
+    session_id = request_chat_session_id(create_if_missing: false)
     return if performed?
 
     clear_conversation_history(session_id) if session_id
@@ -117,8 +120,9 @@ class ChatbotController < ApplicationController
   end
 
   def download_report
-    sid = request_chat_session_id
+    sid = request_chat_session_id(create_if_missing: false)
     return if performed?
+    render_404 and return if sid.blank?
 
     workspace = current_workspace(sid)
     report = workspace.resolve_report(params[:filename])
@@ -180,14 +184,21 @@ class ChatbotController < ApplicationController
         return
       end
       session[session_key] = conversation.session_id
+      return conversation.session_id
     end
 
-    current_chat_session_id
+    return nil if new_conversation_requested?
+
+    current_chat_session_id(create_if_missing: false)
   end
 
-  def request_chat_session_id
+  def request_chat_session_id(create_if_missing: true)
     requested = params[:conversation].to_s.strip
-    return current_chat_session_id if requested.blank?
+    if requested.blank?
+      return start_new_chat_session if create_if_missing && new_conversation_requested?
+
+      return current_chat_session_id(create_if_missing: create_if_missing)
+    end
 
     conversation = find_chat_conversation(requested)
     unless conversation
@@ -200,12 +211,21 @@ class ChatbotController < ApplicationController
     conversation.session_id
   end
 
-  def current_chat_session_id
+  def current_chat_session_id(create_if_missing: false)
     sid = session[session_key]
-    return sid if sid.present? && find_chat_conversation(sid)
+    if sid.present?
+      conversation = find_chat_conversation(sid)
+      return conversation.session_id if conversation
+      session[session_key] = nil
+    end
 
-    session[session_key] = nil if sid.present?
-    start_new_chat_session
+    recent = recent_chat_conversations.first
+    if recent
+      session[session_key] = recent.session_id
+      return recent.session_id
+    end
+
+    start_new_chat_session if create_if_missing
   end
 
   def start_new_chat_session
@@ -218,6 +238,10 @@ class ChatbotController < ApplicationController
 
   def wants_streaming?
     request.headers['Accept']&.include?('text/event-stream')
+  end
+
+  def new_conversation_requested?
+    params[:new_conversation].to_s == '1'
   end
 
   def stream_chat_response(message, sid:, workspace_changed: false)
@@ -443,6 +467,7 @@ class ChatbotController < ApplicationController
   end
 
   def recent_chat_conversations
+    cleanup_empty_chat_conversations!
     chat_conversation_scope.limit(RECENT_CHAT_SESSION_LIMIT)
   end
 
@@ -462,6 +487,12 @@ class ChatbotController < ApplicationController
     )
     prune_chat_conversations!(keep_session_id: session_id)
     conversation
+  end
+
+  def active_chat_session(session_id)
+    return RedmineTxMcp::ChatbotConversation.new unless session_id.present?
+
+    ensure_chat_conversation_record(session_id)
   end
 
   def delete_chat_conversation_record(session_id)
@@ -490,14 +521,42 @@ class ChatbotController < ApplicationController
 
   def prune_chat_conversations!(keep_session_id:)
     cutoff = CHAT_SESSION_RETENTION_DAYS.days.ago
+    empty = chat_conversation_scope.select { |conversation| empty_chat_conversation?(conversation) }
     stale = chat_conversation_scope.where('COALESCE(last_message_at, updated_at, created_at) < ?', cutoff).to_a
     overflow = chat_conversation_scope.offset(MAX_PERSISTED_CHAT_SESSIONS).to_a
 
-    (stale + overflow).uniq.each do |conversation|
+    (empty + stale + overflow).uniq.each do |conversation|
       next if conversation.session_id == keep_session_id
 
       delete_chat_conversation_record(conversation.session_id)
     end
+  end
+
+  def cleanup_empty_chat_conversations!
+    prune_chat_conversations!(keep_session_id: nil)
+  end
+
+  def discard_active_empty_session!
+    sid = session[session_key]
+    return if sid.blank?
+
+    delete_chat_conversation_record(sid) if empty_chat_conversation_id?(sid)
+  end
+
+  def empty_chat_conversation_id?(session_id)
+    conversation = find_chat_conversation(session_id)
+    conversation.present? && empty_chat_conversation?(conversation)
+  end
+
+  def empty_chat_conversation?(conversation)
+    data = normalize_conversation_session(
+      'display_history' => conversation.display_history_payload,
+      'chatbot_state' => conversation.chatbot_state_payload
+    )
+    return false if conversation_session_present?(data)
+
+    workspace = current_workspace(conversation.session_id)
+    workspace.list_uploads.empty? && workspace.list_reports.empty?
   end
 
   def sessions_payload(active_session_id:)
