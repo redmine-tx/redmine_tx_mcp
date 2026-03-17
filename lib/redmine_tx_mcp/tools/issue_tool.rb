@@ -200,6 +200,30 @@ module RedmineTxMcp
               }
             },
             {
+              name: "issue_auto_schedule_preview",
+              description: "Preview automatic scheduling for all unscheduled descendant implementation issues under one parent issue. Uses estimated_hours, assignee availability, existing fixed schedules, and visible dependency relations. If any target descendant issue is missing estimated_hours, returns that list and does not produce a preview token.",
+              inputSchema: {
+                type: "object",
+                properties: {
+                  parent_issue_id: { type: "integer", description: "Parent issue ID whose descendant implementation issues should be auto-scheduled" },
+                  assign_from_date: { type: "string", description: "Earliest allowed start date for new placements. Accepts YYYY-MM-DD, YYYY/MM/DD, YYYY.MM.DD, today/yesterday/tomorrow, 오늘/어제/내일. Default: today." }
+                },
+                required: ["parent_issue_id"]
+              }
+            },
+            {
+              name: "issue_auto_schedule_apply",
+              description: "Apply a previously previewed automatic schedule exactly as proposed. Requires the preview_token returned by issue_auto_schedule_preview.",
+              inputSchema: {
+                type: "object",
+                properties: {
+                  preview_token: { type: "string", description: "Opaque signed token returned by issue_auto_schedule_preview" },
+                  notes: { type: "string", description: "Optional journal note to add to each scheduled issue" }
+                },
+                required: ["preview_token"]
+              }
+            },
+            {
               name: "version_overview",
               description: "Get a version/milestone overview with all parent issues summarized. Each parent shows its children's aggregate progress. Includes version-level alerts (overdue parents, stale parents) and stage distribution. Use this to understand overall release/milestone status.",
               inputSchema: {
@@ -257,6 +281,10 @@ module RedmineTxMcp
             delete_issue_relation(arguments)
           when "issue_children_summary"
             children_summary(arguments, chatbot: chatbot)
+          when "issue_auto_schedule_preview"
+            auto_schedule_preview(arguments)
+          when "issue_auto_schedule_apply"
+            auto_schedule_apply(arguments)
           when "version_overview"
             version_overview(arguments, chatbot: chatbot)
           when "bug_statistics"
@@ -564,6 +592,194 @@ module RedmineTxMcp
           { success: true, relation: summary, message: "Issue relation ##{args['id']} deleted" }
         rescue ActiveRecord::RecordNotFound
           { error: "Issue relation not found" }
+        end
+
+        # ─── Auto Schedule ─────────────────────────────────
+
+        def auto_schedule_preview(args)
+          ensure_milestone_auto_scheduler!
+
+          parent_issue = Issue.visible.find(args['parent_issue_id'])
+          assign_from_date = args['assign_from_date'].present? ? parse_filter_date(args['assign_from_date'], 'assign_from_date') : Date.today
+          descendant_ids = parent_issue.descendants.pluck(:id)
+
+          if descendant_ids.empty?
+            return {
+              success: true,
+              preview_only: true,
+              can_auto_schedule: false,
+              parent_issue: auto_schedule_parent_payload(parent_issue),
+              assign_from_date: assign_from_date.iso8601,
+              scheduled_issue_count: 0,
+              scheduled_issues: [],
+              missing_estimated_hours_count: 0,
+              missing_estimated_hours_issues: [],
+              message: "The parent issue has no descendant issues to auto-schedule."
+            }
+          end
+
+          issues_info = RedmineTxMilestoneAutoScheduleHelper::AutoScheduler.analyze_parent_schedule(parent_issue.id)
+          missing_issues = auto_schedule_descendant_issues(issues_info[:no_estimated_hours_issues], descendant_ids)
+
+          if missing_issues.any?
+            sorted_missing_issues = sort_auto_schedule_issues(missing_issues)
+
+            return {
+              success: true,
+              preview_only: true,
+              can_auto_schedule: false,
+              parent_issue: auto_schedule_parent_payload(parent_issue),
+              assign_from_date: assign_from_date.iso8601,
+              scheduled_issue_count: 0,
+              scheduled_issues: [],
+              missing_estimated_hours_count: sorted_missing_issues.size,
+              missing_estimated_hours_issue_ids: sorted_missing_issues.map(&:id),
+              missing_estimated_hours_issues: sorted_missing_issues.map { |issue| format_auto_schedule_issue(issue) },
+              message: "Auto-schedule preview is unavailable because #{sorted_missing_issues.size} descendant issues are missing estimated_hours."
+            }
+          end
+
+          target_issues = auto_schedule_descendant_issues(issues_info[:candidate_issues], descendant_ids)
+
+          if target_issues.empty?
+            return {
+              success: true,
+              preview_only: true,
+              can_auto_schedule: false,
+              parent_issue: auto_schedule_parent_payload(parent_issue),
+              assign_from_date: assign_from_date.iso8601,
+              scheduled_issue_count: 0,
+              scheduled_issues: [],
+              missing_estimated_hours_count: 0,
+              missing_estimated_hours_issues: [],
+              fixed_issue_count: auto_schedule_descendant_issues(issues_info[:fixed_issues], descendant_ids).size,
+              message: "There are no unscheduled descendant implementation issues to auto-schedule."
+            }
+          end
+
+          original_dates = build_auto_schedule_current_dates(issues_info[:all_issues])
+          result_issues = RedmineTxMilestoneAutoScheduleHelper::AutoScheduler.auto_schedule_issues(
+            issues_info[:all_issues],
+            target_issues.map(&:id),
+            assign_from_date
+          )
+          sorted_result_issues = sort_auto_schedule_issues(result_issues)
+          preview_issue_data = build_auto_schedule_issue_data(sorted_result_issues)
+
+          {
+            success: true,
+            preview_only: true,
+            can_auto_schedule: true,
+            parent_issue: auto_schedule_parent_payload(parent_issue),
+            assign_from_date: assign_from_date.iso8601,
+            scheduled_issue_count: sorted_result_issues.size,
+            scheduled_issue_ids: sorted_result_issues.map(&:id),
+            fixed_issue_count: auto_schedule_descendant_issues(issues_info[:fixed_issues], descendant_ids).size,
+            missing_estimated_hours_count: 0,
+            missing_estimated_hours_issues: [],
+            preview_token: build_auto_schedule_preview_token(
+              parent_issue_id: parent_issue.id,
+              assign_from_date: assign_from_date,
+              issue_data: preview_issue_data
+            ),
+            scheduled_issues: sorted_result_issues.map do |issue|
+              format_auto_schedule_preview_issue(issue, original_dates[issue.id])
+            end,
+            message: "Preview generated for #{sorted_result_issues.size} descendant issues. Call issue_auto_schedule_apply with the preview_token to save these dates."
+          }
+        rescue ActiveRecord::RecordNotFound
+          { error: "Issue not found" }
+        end
+
+        def auto_schedule_apply(args)
+          ensure_milestone_auto_scheduler!
+
+          payload = decode_auto_schedule_preview_token(args['preview_token'])
+          issue_data = Array(payload['issue_data']).map do |entry|
+            {
+              'id' => entry['id'].to_i,
+              'start_date' => entry['start_date'].to_s,
+              'due_date' => entry['due_date'].to_s
+            }
+          end
+
+          return { error: "preview_token does not contain any scheduled issues" } if issue_data.empty?
+
+          requested_issue_ids = issue_data.map { |entry| entry['id'] }.uniq
+          issues_by_id = Issue.visible
+            .where(id: requested_issue_ids)
+            .includes(:status, :tracker, :priority, :assigned_to, :fixed_version)
+            .index_by(&:id)
+
+          missing_ids = requested_issue_ids - issues_by_id.keys
+          if missing_ids.any?
+            return {
+              error: "Some scheduled issues are no longer visible",
+              requested_issue_ids: requested_issue_ids,
+              missing_issue_ids: missing_ids
+            }
+          end
+
+          if payload['requested_by_user_id'].present? && User.current.id != payload['requested_by_user_id'].to_i
+            return { error: "preview_token belongs to a different user" }
+          end
+
+          failure = nil
+          updated_ids = []
+
+          Issue.transaction do
+            issue_data.each do |entry|
+              issue = issues_by_id[entry['id']]
+
+              unless issue.editable?(User.current)
+                failure = { id: issue.id, error: "Not authorized to edit this issue" }
+                raise ActiveRecord::Rollback
+              end
+
+              initialize_issue_journal(issue, args['notes'])
+              issue.safe_attributes = issue_safe_attributes({
+                'start_date' => entry['start_date'],
+                'due_date' => entry['due_date']
+              })
+
+              unless issue.save
+                failure = { id: issue.id, error: "Failed to update issue", validation_errors: issue.errors.full_messages }
+                raise ActiveRecord::Rollback
+              end
+
+              updated_ids << issue.id
+            end
+          end
+
+          if failure
+            return {
+              error: "Auto-schedule apply failed; no changes were applied",
+              requested_issue_ids: requested_issue_ids,
+              updated_issue_ids: [],
+              updated_count: 0,
+              failed_count: 1,
+              failed: [failure]
+            }
+          end
+
+          refreshed_issues = Issue.visible
+            .where(id: updated_ids)
+            .includes(:status, :tracker, :priority, :assigned_to, :fixed_version)
+            .index_by(&:id)
+
+          {
+            success: true,
+            preview_only: false,
+            parent_issue_id: payload['parent_issue_id'].to_i,
+            assign_from_date: payload['assign_from_date'],
+            requested_issue_ids: requested_issue_ids,
+            updated_issue_ids: updated_ids,
+            updated_count: updated_ids.size,
+            issues: issue_data.filter_map { |entry| refreshed_issues[entry['id']] && format_auto_schedule_issue(refreshed_issues[entry['id']]) },
+            message: "Applied auto-schedule dates to #{updated_ids.size} issues."
+          }
+        rescue ActiveSupport::MessageVerifier::InvalidSignature
+          { error: "preview_token is invalid" }
         end
 
         # ─── Children Summary ───────────────────────────────
@@ -1122,6 +1338,131 @@ module RedmineTxMcp
             failed_count: failures.size,
             failed: failures
           }
+        end
+
+        def ensure_milestone_auto_scheduler!
+          return if defined?(RedmineTxMilestoneAutoScheduleHelper::AutoScheduler)
+
+          helper_path = File.expand_path('../../../../redmine_tx_milestone/lib/redmine_tx_milestone_auto_schedule_helper', __FILE__)
+          require_dependency helper_path if File.exist?("#{helper_path}.rb")
+
+          unless defined?(RedmineTxMilestoneAutoScheduleHelper::AutoScheduler)
+            raise LoadError, "redmine_tx_milestone auto scheduler is not available"
+          end
+
+          unless Issue.ancestors.include?(RedmineTxMilestoneAutoScheduleHelper::IssuePatch)
+            Issue.prepend(RedmineTxMilestoneAutoScheduleHelper::IssuePatch)
+          end
+        end
+
+        def auto_schedule_descendant_issues(issues, descendant_ids)
+          Array(issues).select { |issue| descendant_ids.include?(issue.id) }
+        end
+
+        def sort_auto_schedule_issues(issues)
+          Array(issues).sort_by do |issue|
+            [
+              issue.start_date || Date.new(9999, 12, 31),
+              issue.due_date || Date.new(9999, 12, 31),
+              issue.assigned_to&.name.to_s,
+              -(issue.priority_id || 0),
+              issue.id
+            ]
+          end
+        end
+
+        def build_auto_schedule_current_dates(issues)
+          Array(issues).each_with_object({}) do |issue, memo|
+            memo[issue.id] = {
+              start_date: issue.start_date&.iso8601,
+              due_date: issue.due_date&.iso8601
+            }
+          end
+        end
+
+        def build_auto_schedule_issue_data(issues)
+          Array(issues).map do |issue|
+            {
+              'id' => issue.id,
+              'start_date' => issue.start_date&.iso8601,
+              'due_date' => issue.due_date&.iso8601
+            }
+          end
+        end
+
+        def build_auto_schedule_preview_token(parent_issue_id:, assign_from_date:, issue_data:)
+          auto_schedule_preview_verifier.generate({
+            'parent_issue_id' => parent_issue_id.to_i,
+            'assign_from_date' => assign_from_date.iso8601,
+            'requested_by_user_id' => User.current.id,
+            'issue_data' => issue_data
+          })
+        end
+
+        def decode_auto_schedule_preview_token(token)
+          auto_schedule_preview_verifier.verify(token.to_s)
+        end
+
+        def auto_schedule_preview_verifier
+          @auto_schedule_preview_verifier ||= ActiveSupport::MessageVerifier.new(
+            "#{Rails.application.secret_key_base}/redmine_tx_mcp/issue_auto_schedule_preview",
+            digest: 'SHA256',
+            serializer: JSON
+          )
+        end
+
+        def auto_schedule_parent_payload(issue)
+          {
+            id: issue.id,
+            subject: issue.subject,
+            project: issue.project ? {
+              id: issue.project.id,
+              name: issue.project.name,
+              identifier: issue.project.identifier
+            } : nil
+          }
+        end
+
+        def format_auto_schedule_issue(issue)
+          {
+            detail_level: 'schedule',
+            id: issue.id,
+            subject: issue.subject,
+            tracker: issue.tracker ? {
+              id: issue.tracker.id,
+              name: issue.tracker.name
+            } : nil,
+            status: issue.status ? {
+              id: issue.status.id,
+              name: issue.status.name,
+              is_closed: issue.status.is_closed?
+            } : nil,
+            priority: issue.priority ? {
+              id: issue.priority.id,
+              name: issue.priority.name
+            } : nil,
+            assigned_to: issue.assigned_to ? {
+              id: issue.assigned_to.id,
+              name: issue.assigned_to.name
+            } : nil,
+            fixed_version: issue.fixed_version ? {
+              id: issue.fixed_version.id,
+              name: issue.fixed_version.name,
+              due_date: issue.fixed_version.effective_date&.iso8601
+            } : nil,
+            estimated_hours: issue.estimated_hours,
+            start_date: issue.start_date&.iso8601,
+            due_date: issue.due_date&.iso8601
+          }.merge(issue_tip_fields(issue))
+        end
+
+        def format_auto_schedule_preview_issue(issue, original_dates)
+          format_auto_schedule_issue(issue).merge(
+            current_start_date: original_dates && original_dates[:start_date],
+            current_due_date: original_dates && original_dates[:due_date],
+            proposed_start_date: issue.start_date&.iso8601,
+            proposed_due_date: issue.due_date&.iso8601
+          ).except(:start_date, :due_date)
         end
 
         # ─── Token reduction: SummaryService → LLM-friendly ─

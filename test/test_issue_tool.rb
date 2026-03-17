@@ -1,5 +1,6 @@
 require File.expand_path('test_helper', __dir__)
 require 'ostruct'
+require 'securerandom'
 
 class IssueToolTest < ActiveSupport::TestCase
   FakeNamedRecord = Struct.new(:id, :name, :firstname, :lastname, :login, :mail, :identifier, keyword_init: true)
@@ -127,7 +128,117 @@ class IssueToolTest < ActiveSupport::TestCase
     assert_equal 456, detail.dig(:relations, 0, :other_issue, :id)
   end
 
+  test "issue_auto_schedule_preview reports descendant issues missing estimated hours" do
+    User.current = User.find(1)
+    project = Project.find(1)
+    assignee = create_auto_schedule_assignee(project)
+    parent = create_auto_schedule_issue(project: project, subject: 'Auto schedule parent', assigned_to: assignee, estimated_hours: nil)
+    create_auto_schedule_issue(
+      project: project,
+      parent: parent,
+      subject: 'Already scheduled child',
+      assigned_to: assignee,
+      estimated_hours: nil,
+      start_date: Date.new(2026, 3, 24),
+      due_date: Date.new(2026, 3, 24)
+    )
+    missing_child = create_auto_schedule_issue(
+      project: project,
+      parent: parent,
+      subject: 'Missing estimate child',
+      assigned_to: assignee,
+      estimated_hours: nil
+    )
+    create_auto_schedule_issue(
+      project: project,
+      parent: parent,
+      subject: 'Estimated child',
+      assigned_to: assignee,
+      estimated_hours: 8.0
+    )
+
+    result = indifferent(RedmineTxMcp::Tools::IssueTool.call_tool('issue_auto_schedule_preview', {
+      'parent_issue_id' => parent.id,
+      'assign_from_date' => '2026-03-23'
+    }))
+
+    assert_equal true, result[:success]
+    assert_equal true, result[:preview_only]
+    assert_equal false, result[:can_auto_schedule]
+    assert_equal 0, result[:scheduled_issue_count]
+    assert_equal 1, result[:missing_estimated_hours_count]
+    assert_equal [missing_child.id], Array(result[:missing_estimated_hours_issue_ids])
+
+    missing_items = Array(result[:missing_estimated_hours_issues]).map { |item| indifferent(item) }
+    assert_equal [missing_child.id], missing_items.map { |item| item[:id] }
+    assert_nil result[:preview_token]
+  end
+
+  test "issue_auto_schedule_preview returns token and apply persists proposed dates" do
+    User.current = User.find(1)
+    project = Project.find(1)
+    assignee = create_auto_schedule_assignee(project)
+    parent = create_auto_schedule_issue(project: project, subject: 'Preview parent', assigned_to: assignee, estimated_hours: nil)
+    first_child = create_auto_schedule_issue(
+      project: project,
+      parent: parent,
+      subject: 'First child',
+      assigned_to: assignee,
+      estimated_hours: 8.0
+    )
+    second_child = create_auto_schedule_issue(
+      project: project,
+      parent: parent,
+      subject: 'Second child',
+      assigned_to: assignee,
+      estimated_hours: 16.0
+    )
+
+    preview = indifferent(RedmineTxMcp::Tools::IssueTool.call_tool('issue_auto_schedule_preview', {
+      'parent_issue_id' => parent.id,
+      'assign_from_date' => '2026-03-23'
+    }))
+
+    assert_equal true, preview[:success]
+    assert_equal true, preview[:preview_only]
+    assert_equal true, preview[:can_auto_schedule]
+    assert_equal 2, preview[:scheduled_issue_count]
+    assert preview[:preview_token].present?
+
+    scheduled_items = Array(preview[:scheduled_issues]).map { |item| indifferent(item) }
+    scheduled_by_id = scheduled_items.index_by { |item| item[:id] }
+    first_preview = scheduled_by_id.fetch(first_child.id)
+    second_preview = scheduled_by_id.fetch(second_child.id)
+
+    assert first_preview[:proposed_start_date].present?
+    assert first_preview[:proposed_due_date].present?
+    assert second_preview[:proposed_start_date].present?
+    assert second_preview[:proposed_due_date].present?
+    assert_operator Date.iso8601(second_preview[:proposed_start_date]), :>, Date.iso8601(first_preview[:proposed_due_date])
+
+    applied = indifferent(RedmineTxMcp::Tools::IssueTool.call_tool('issue_auto_schedule_apply', {
+      'preview_token' => preview[:preview_token],
+      'notes' => 'Applied via MCP test'
+    }))
+
+    assert_equal true, applied[:success]
+    assert_equal false, applied[:preview_only]
+    assert_equal 2, applied[:updated_count]
+
+    first_child.reload
+    second_child.reload
+
+    assert_equal Date.iso8601(first_preview[:proposed_start_date]), first_child.start_date
+    assert_equal Date.iso8601(first_preview[:proposed_due_date]), first_child.due_date
+    assert_equal Date.iso8601(second_preview[:proposed_start_date]), second_child.start_date
+    assert_equal Date.iso8601(second_preview[:proposed_due_date]), second_child.due_date
+  end
+
   private
+
+  def indifferent(hash)
+    hash.with_indifferent_access
+  end
 
   def build_detailed_issue
     tracker = OpenStruct.new(id: 1, name: 'Task')
@@ -182,5 +293,68 @@ class IssueToolTest < ActiveSupport::TestCase
       updated_on: Time.utc(2026, 3, 14, 10, 0, 0),
       closed_on: nil
     )
+  end
+
+  def create_auto_schedule_assignee(project)
+    token = SecureRandom.hex(4)
+    user = User.new(
+      login: "auto_schedule_#{token}",
+      firstname: 'Auto',
+      lastname: "Schedule#{token}",
+      mail: "auto_schedule_#{token}@example.com",
+      language: (Setting.default_language || 'en')
+    )
+    user.password = 'password'
+    user.password_confirmation = 'password'
+    user.mail_notification = 'only_my_events' if user.respond_to?(:mail_notification=)
+    user.must_change_passwd = false if user.respond_to?(:must_change_passwd=)
+    user.save!
+
+    member = Member.new(project: project, principal: user)
+    member.roles = [Role.givable.first || Role.first]
+    member.save!
+
+    user
+  end
+
+  def create_auto_schedule_issue(project:, subject:, assigned_to:, estimated_hours:, parent: nil, start_date: nil, due_date: nil)
+    issue = Issue.new(
+      project: project,
+      tracker: work_tracker_for(project),
+      status: open_status,
+      priority: default_priority,
+      author: User.find(1),
+      assigned_to: assigned_to,
+      subject: subject,
+      estimated_hours: estimated_hours,
+      start_date: start_date,
+      due_date: due_date
+    )
+    issue.parent = parent if parent
+    issue.save!
+    issue
+  end
+
+  def work_tracker_for(project)
+    trackers = project.trackers.to_a
+    excluded_ids = []
+    %i[sidejob_trackers_ids bug_trackers_ids exception_trackers_ids roadmap_trackers_ids].each do |method_name|
+      excluded_ids.concat(Array(Tracker.public_send(method_name))) if Tracker.respond_to?(method_name)
+    end
+    trackers.detect { |tracker| !excluded_ids.include?(tracker.id) } || trackers.first || Tracker.first
+  end
+
+  def open_status
+    if IssueStatus.respond_to?(:new_ids) && IssueStatus.new_ids.any?
+      IssueStatus.where(id: IssueStatus.new_ids).order(:id).first || IssueStatus.first
+    elsif IssueStatus.respond_to?(:in_progress_ids) && IssueStatus.in_progress_ids.any?
+      IssueStatus.where(id: IssueStatus.in_progress_ids).order(:id).first || IssueStatus.first
+    else
+      IssueStatus.where(is_closed: false).order(:id).first || IssueStatus.first
+    end
+  end
+
+  def default_priority
+    IssuePriority.default || IssuePriority.active.order(:id).first || IssuePriority.first
   end
 end

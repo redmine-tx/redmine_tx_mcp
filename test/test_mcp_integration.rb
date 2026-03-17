@@ -37,6 +37,8 @@ class McpIntegrationTest < ActiveSupport::TestCase
     assert_includes issue_tool_names, 'insert_bulk_update'
     assert_includes issue_tool_names, 'issue_relation_create'
     assert_includes issue_tool_names, 'issue_relation_delete'
+    assert_includes issue_tool_names, 'issue_auto_schedule_preview'
+    assert_includes issue_tool_names, 'issue_auto_schedule_apply'
 
     issue_list_tool = issue_tools.find { |t| t[:name] == 'issue_list' }
     issue_list_props = issue_list_tool[:inputSchema][:properties]
