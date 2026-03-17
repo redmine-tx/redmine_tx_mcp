@@ -133,7 +133,8 @@ module RedmineTxMcp
       @model = model || 'claude-sonnet-4-6'
       @project_id = project_id
       @conversation_history = []
-      @selected_tool_names = nil
+      reset_session_state
+      reset_turn_state
       reset_metrics
 
       if @provider == 'openai'
@@ -152,6 +153,7 @@ module RedmineTxMcp
       # Set current user for MCP operations
       User.current = user || User.find(1)
       session_start = Process.clock_gettime(Process::CLOCK_MONOTONIC)
+      reset_turn_state
       reset_metrics
 
       begin
@@ -214,6 +216,7 @@ module RedmineTxMcp
     def chat_stream(user_message, user: nil)
       User.current = user || User.find(1)
       session_start = Process.clock_gettime(Process::CLOCK_MONOTONIC)
+      reset_turn_state
       reset_metrics
 
       begin
@@ -285,14 +288,16 @@ module RedmineTxMcp
 
     def reset_conversation
       @conversation_history = []
-      @selected_tool_names = nil
-      reset_agent_state
+      reset_session_state
+      reset_turn_state
+      reset_metrics
     end
 
     def export_session_state
       {
         'conversation_id' => conversation_id,
-        'conversation_history' => deep_dup(@conversation_history.last(MAX_PERSISTED_MESSAGES))
+        'conversation_history' => deep_dup(@conversation_history.last(MAX_PERSISTED_MESSAGES)),
+        'agent_state' => export_agent_state
       }
     end
 
@@ -304,6 +309,9 @@ module RedmineTxMcp
 
       history = snapshot['conversation_history'] || snapshot[:conversation_history]
       @conversation_history = normalize_conversation_history(history)
+
+      agent_state = snapshot['agent_state'] || snapshot[:agent_state]
+      restore_agent_state(agent_state)
     end
 
     def conversation_id
@@ -384,15 +392,17 @@ module RedmineTxMcp
       include_internal_tools ? internal_tools + tools : tools
     end
 
-    def build_request_body(messages:, force_all_tools: false, tool_choice: nil, include_internal_tools: true)
+    def build_request_body(messages:, force_all_tools: false, tool_choice: nil, include_internal_tools: true, include_tools: true)
       body = {
         model: @model,
         max_tokens: 4000,
         system: build_system_message,
-        messages: messages,
-        tools: available_mcp_tools(force_all: force_all_tools, include_internal_tools: include_internal_tools)
+        messages: messages
       }
-      body[:tool_choice] = tool_choice if tool_choice
+      if include_tools
+        body[:tools] = available_mcp_tools(force_all: force_all_tools, include_internal_tools: include_internal_tools)
+        body[:tool_choice] = tool_choice if tool_choice
+      end
       body
     end
 
@@ -511,17 +521,29 @@ module RedmineTxMcp
     end
 
     def resolve_response(response, user_message, event_handler: nil)
-      tool_call_depth = 0
-      @metrics[:tool_call_depth] = 0
+      @metrics[:tool_call_depth] = @real_tool_calls
 
       loop do
-        while response_has_tool_use?(response) && tool_call_depth < max_tool_calls
-          tool_call_depth += 1
-          @metrics[:tool_call_depth] = tool_call_depth
+        while response_has_tool_use?(response)
+          if tool_call_budget_exhausted?
+            ChatbotLogger.log_info(
+              session_id: conversation_id,
+              context: "TOOL LOOP",
+              detail: "MAX CALLS #{max_tool_calls} reached, forcing final summary"
+            )
+            response = summarize_without_tools(
+              instruction: '[시스템] 도구 호출 한도에 도달했습니다. 이미 수집한 결과만 사용해서 답변을 마무리하세요.',
+              thinking_message: '도구 호출 한도에 도달해 현재까지 결과를 정리 중입니다...',
+              event_handler: event_handler
+            )
+            break
+          end
+
+          @metrics[:tool_call_depth] = @real_tool_calls
           ChatbotLogger.log_info(
             session_id: conversation_id,
             context: "TOOL LOOP",
-            detail: "depth: #{tool_call_depth}/#{max_tool_calls}"
+            detail: "calls: #{@real_tool_calls}/#{max_tool_calls} | remaining: #{remaining_tool_calls}"
           )
           response = handle_tool_calls(response, event_handler: event_handler)
         end
@@ -530,7 +552,7 @@ module RedmineTxMcp
           ChatbotLogger.log_info(
             session_id: conversation_id,
             context: "TOOL LOOP",
-            detail: "MAX DEPTH #{max_tool_calls} reached, stopping"
+            detail: "tool requests remained after the #{max_tool_calls} call budget was exhausted"
           )
           break
         end
@@ -548,6 +570,10 @@ module RedmineTxMcp
       begin
         # Process each tool call in the response
         tool_results = []
+        response_tool_uses = Array(response['content']).select { |content| content['type'] == 'tool_use' }
+        contains_read_tools = response_tool_uses.any? { |content| read_only_tool?(content['name']) }
+        defer_all_writes = contains_read_tools && response_tool_uses.any? { |content| side_effecting_tool?(content['name']) }
+        write_executed = false
 
         response['content'].each do |content|
           next unless content['type'] == 'tool_use'
@@ -577,12 +603,48 @@ module RedmineTxMcp
             next
           end
 
+          if tool_call_budget_exhausted?
+            warning = "도구 호출 한도(#{max_tool_calls})에 도달해 #{tool_name} 실행을 건너뛰었습니다. 현재까지 결과만으로 정리하세요."
+            ChatbotLogger.log_info(session_id: conversation_id, context: "TOOL BUDGET", detail: warning)
+            tool_results << {
+              type: 'tool_result',
+              tool_use_id: content['id'],
+              content: warning
+            }
+            next
+          end
+
+          if side_effecting_tool?(tool_name) && defer_all_writes
+            warning = deferred_write_tool_message(tool_name, '이번 단계에서는 조회 결과를 먼저 확인해야 해서 쓰기 도구를 보류했습니다. 필요한 변경이 맞으면 다음 단계에서 다시 호출하세요.')
+            ChatbotLogger.log_info(session_id: conversation_id, context: "WRITE GUARD", detail: warning)
+            tool_results << {
+              type: 'tool_result',
+              tool_use_id: content['id'],
+              content: warning
+            }
+            next
+          end
+
+          if side_effecting_tool?(tool_name) && write_executed
+            warning = deferred_write_tool_message(tool_name, '쓰기 도구는 한 단계에서 하나씩만 실행합니다. 앞선 변경 결과를 확인한 뒤 다시 호출하세요.')
+            ChatbotLogger.log_info(session_id: conversation_id, context: "WRITE GUARD", detail: warning)
+            tool_results << {
+              type: 'tool_result',
+              tool_use_id: content['id'],
+              content: warning
+            }
+            next
+          end
+
           event_handler&.call({ type: 'tool_call', tool: tool_name, input: tool_input })
 
           # Execute the tool (logging handled by execute_mcp_tool -> ChatbotLogger.log_tool_execution)
           result = execute_mcp_tool(tool_name, tool_input)
           record_tool_call!(tool_name, tool_input, result)
           @real_tool_calls += 1
+          write_executed = true if side_effecting_tool?(tool_name)
+          @write_tool_calls += 1 if side_effecting_tool?(tool_name)
+          @successful_write_tool_calls += 1 if side_effecting_tool?(tool_name) && !tool_error_result?(result)
           @tool_results_since_last_plan += 1 unless tool_error_result?(result)
 
           event_handler&.call({ type: 'tool_result', tool: tool_name })
@@ -613,9 +675,11 @@ module RedmineTxMcp
             clean_messages.last[:content] = tool_results
           end
 
+          @metrics[:tool_call_depth] = @real_tool_calls
+
           invoke_model(
-            build_request_body(messages: clean_messages),
-            thinking_message: 'Analyzing results...',
+            build_request_body(messages: clean_messages, include_tools: !tool_call_budget_exhausted?),
+            thinking_message: tool_call_budget_exhausted? ? 'Tool call budget reached. Summarizing results...' : 'Analyzing results...',
             event_handler: event_handler
           )
         else
@@ -719,18 +783,23 @@ module RedmineTxMcp
         input_tokens: 0, output_tokens: 0,
         tool_call_depth: 0, last_budget_message_count: nil
       }
-      reset_agent_state
     end
 
-    def reset_agent_state
+    def reset_session_state
+      @selected_tool_names = nil
       @matched_profiles = []
-      @selection_confidence = 'high'
-      @planner_active = false
+      @selection_confidence = 'none'
       @plan_state = nil
+    end
+
+    def reset_turn_state
+      @planner_active = false
       @tool_results_since_last_plan = 0
       @tool_call_budget = nil
       @tool_call_history = Hash.new { |hash, key| hash[key] = { attempts: 0, successes: 0, errors: 0 } }
       @real_tool_calls = 0
+      @write_tool_calls = 0
+      @successful_write_tool_calls = 0
       @guard_retry_counts = Hash.new(0)
     end
 
@@ -924,7 +993,16 @@ module RedmineTxMcp
       @planner_active = should_activate_planner?(msg_lower, matched_profiles)
 
       unless matched_profiles.any?
+        if plan_pending? && @selected_tool_names.present?
+          @selection_confidence = 'restored'
+          @planner_active = true
+          ChatbotLogger.log_info(session_id: conversation_id, context: "TOOL SELECT", detail: "no keyword match, reusing previous #{Array(@selected_tool_names).size} tools because plan is still pending")
+          return
+        end
+
         @selected_tool_names = nil  # fallback: use all tools
+        @matched_profiles = []
+        @selection_confidence = 'none'
         ChatbotLogger.log_info(session_id: conversation_id, context: "TOOL SELECT", detail: "no keyword match, using all #{all_mcp_tools.size} tools")
         return
       end
@@ -1506,6 +1584,14 @@ module RedmineTxMcp
       @tool_call_budget || configured_max_tool_calls
     end
 
+    def remaining_tool_calls
+      [max_tool_calls - @real_tool_calls, 0].max
+    end
+
+    def tool_call_budget_exhausted?
+      remaining_tool_calls <= 0
+    end
+
     def invoke_model(request_body, thinking_message: nil, event_handler: nil)
       first_chunk_received = false
       if event_handler
@@ -1524,6 +1610,17 @@ module RedmineTxMcp
     def build_clean_messages(extra_messages = [])
       clean_conversation_history(
         budget_conversation_history(@conversation_history + extra_messages)
+      )
+    end
+
+    def summarize_without_tools(instruction:, thinking_message:, event_handler: nil)
+      summary_messages = build_clean_messages([
+        { role: 'user', content: instruction }
+      ])
+      invoke_model(
+        build_request_body(messages: summary_messages, include_tools: false),
+        thinking_message: thinking_message,
+        event_handler: event_handler
       )
     end
 
@@ -1642,6 +1739,10 @@ module RedmineTxMcp
       2
     end
 
+    def deferred_write_tool_message(tool_name, reason)
+      "쓰기 도구 #{tool_name} 실행을 보류했습니다. #{reason}"
+    end
+
     def tool_call_signature(tool_name, tool_input)
       normalized = tool_input.is_a?(Hash) ? tool_input.transform_keys(&:to_s) : {}
       [tool_name.to_s, JSON.generate(normalized.sort.to_h)]
@@ -1708,7 +1809,7 @@ module RedmineTxMcp
         }
       end
 
-      if mutation_intent?(user_message) && @real_tool_calls.zero?
+      if mutation_intent?(user_message) && @write_tool_calls.zero?
         if capability_refusal_response?(assistant_message) && @guard_retry_counts[:capability_refusal] < 1
           @guard_retry_counts[:capability_refusal] += 1
           return {
@@ -1730,6 +1831,19 @@ module RedmineTxMcp
             include_internal_tools: false
           }
         end
+      end
+
+      if mutation_intent?(user_message) && @successful_write_tool_calls.zero? &&
+         completion_claim_without_tool?(assistant_message) &&
+         @guard_retry_counts[:completion_without_tool] < 1
+        @guard_retry_counts[:completion_without_tool] += 1
+        return {
+          instruction: '[시스템] 변경 완료로 답하려면 실제 변경 도구의 성공 결과가 있어야 합니다. 조회만 했거나 실패한 경우에는 필요한 변경 도구를 다시 호출하거나 실패 사실을 설명하세요.',
+          status: '실제 변경 적용 여부를 다시 검증 중입니다...',
+          force_all_tools: true,
+          tool_choice: { type: 'any' },
+          include_internal_tools: false
+        }
       end
 
       if factual_query_intent?(user_message) && @real_tool_calls.zero? &&
@@ -1762,6 +1876,40 @@ module RedmineTxMcp
         thinking_message: retry_info[:status],
         event_handler: event_handler
       )
+    end
+
+    def export_agent_state
+      {
+        'selected_tool_names' => deep_dup(Array(@selected_tool_names)),
+        'matched_profiles' => deep_dup(Array(@matched_profiles).map(&:to_s)),
+        'selection_confidence' => @selection_confidence.to_s,
+        'plan_state' => deep_dup(@plan_state)
+      }
+    end
+
+    def restore_agent_state(agent_state)
+      return unless agent_state.is_a?(Hash)
+
+      selected_tool_names = agent_state['selected_tool_names'] || agent_state[:selected_tool_names]
+      matched_profiles = agent_state['matched_profiles'] || agent_state[:matched_profiles]
+      selection_confidence = agent_state['selection_confidence'] || agent_state[:selection_confidence]
+      plan_state = agent_state['plan_state'] || agent_state[:plan_state]
+
+      @selected_tool_names = normalize_tool_name_list(selected_tool_names)
+      @matched_profiles = Array(matched_profiles).filter_map do |profile|
+        normalized = profile.to_s.strip
+        normalized.present? ? normalized.to_sym : nil
+      end
+      @selection_confidence = selection_confidence.to_s.presence || 'none'
+      @plan_state = plan_state.present? ? normalize_plan_state(plan_state) : nil
+    end
+
+    def normalize_tool_name_list(tool_names)
+      names = Array(tool_names).filter_map do |tool_name|
+        normalized = tool_name.to_s.strip
+        normalized.presence
+      end
+      names.uniq.presence
     end
 
     # ─── Conversation history cleaning ───────────────────────────

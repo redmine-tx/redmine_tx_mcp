@@ -173,6 +173,35 @@ class ClaudeChatbotTest < ActiveSupport::TestCase
     assert_equal 'tool_result', history[2][:content].first['type']
   end
 
+  test "session state export and restore preserves pending plan context for ambiguous follow-up turns" do
+    chatbot = build_chatbot
+    chatbot.send(:select_tools_for_query, '이슈 123 상태를 QA로 변경해줘')
+    chatbot.send(
+      :execute_plan_update,
+      {
+        'steps' => [
+          { 'title' => '이슈 조회', 'status' => 'completed' },
+          { 'title' => '상태 변경', 'status' => 'in_progress' }
+        ],
+        'summary' => '상태 변경 진행 중'
+      }
+    )
+
+    snapshot = chatbot.export_session_state
+    restored = build_chatbot
+    restored.restore_session_state(snapshot)
+    restored.send(:reset_turn_state)
+    restored.send(:reset_metrics)
+    restored.send(:select_tools_for_query, '계속 진행해줘')
+
+    assert_equal true, restored.send(:plan_pending?)
+    assert_equal 'restored', restored.instance_variable_get(:@selection_confidence)
+
+    tool_names = restored.send(:available_mcp_tools).map { |tool| tool[:name] }
+    assert_includes tool_names, 'issue_update'
+    assert_includes tool_names, 'issue_get'
+  end
+
   test "plan_update stores normalized plan state and returns plan event payload" do
     chatbot = build_chatbot
 
@@ -241,6 +270,150 @@ class ClaudeChatbotTest < ActiveSupport::TestCase
 
     chatbot.send(:record_tool_call!, 'issue_update', input, { 'ok' => true })
     assert_equal true, chatbot.send(:repeat_blocked?, 'issue_update', input)
+  end
+
+  test "handle_tool_calls enforces actual tool budget within a single model response" do
+    chatbot = build_chatbot
+    chatbot.instance_variable_set(:@tool_call_budget, 1)
+
+    response = {
+      'content' => [
+        { 'type' => 'tool_use', 'id' => 'tool-1', 'name' => 'issue_get', 'input' => { 'id' => 123 } },
+        { 'type' => 'tool_use', 'id' => 'tool-2', 'name' => 'user_get', 'input' => { 'id' => 7 } }
+      ]
+    }
+
+    executed_tools = []
+    request_bodies = []
+
+    chatbot.stub(:execute_mcp_tool, lambda { |tool_name, _tool_input|
+      executed_tools << tool_name
+      { 'ok' => true, 'tool' => tool_name }
+    }) do
+      chatbot.stub(:invoke_model, lambda { |request_body, thinking_message: nil, event_handler: nil|
+        request_bodies << request_body
+        { 'content' => [{ 'type' => 'text', 'text' => 'summary' }] }
+      }) do
+        result = chatbot.send(:handle_tool_calls, response)
+
+        assert_equal ['issue_get'], executed_tools
+        assert_equal 'summary', chatbot.send(:extract_text_content, result)
+      end
+    end
+
+    assert_equal 1, chatbot.instance_variable_get(:@real_tool_calls)
+    refute request_bodies.last.key?(:tools)
+
+    last_history_entry = chatbot.instance_variable_get(:@conversation_history).last
+    warning_result = last_history_entry[:content].last
+    assert_match(/도구 호출 한도/, warning_result[:content])
+  end
+
+  test "handle_tool_calls defers write tools until read results are reviewed" do
+    chatbot = build_chatbot
+
+    response = {
+      'content' => [
+        { 'type' => 'tool_use', 'id' => 'tool-1', 'name' => 'issue_get', 'input' => { 'id' => 123 } },
+        { 'type' => 'tool_use', 'id' => 'tool-2', 'name' => 'issue_update', 'input' => { 'id' => 123, 'status_id' => 5 } }
+      ]
+    }
+
+    executed_tools = []
+    request_bodies = []
+
+    chatbot.stub(:execute_mcp_tool, lambda { |tool_name, _tool_input|
+      executed_tools << tool_name
+      { 'ok' => true, 'tool' => tool_name }
+    }) do
+      chatbot.stub(:invoke_model, lambda { |request_body, thinking_message: nil, event_handler: nil|
+        request_bodies << request_body
+        { 'content' => [{ 'type' => 'text', 'text' => 'next step' }] }
+      }) do
+        result = chatbot.send(:handle_tool_calls, response)
+
+        assert_equal ['issue_get'], executed_tools
+        assert_equal 'next step', chatbot.send(:extract_text_content, result)
+      end
+    end
+
+    assert_equal 0, chatbot.instance_variable_get(:@write_tool_calls)
+    assert request_bodies.last.key?(:tools)
+
+    last_history_entry = chatbot.instance_variable_get(:@conversation_history).last
+    deferred_result = last_history_entry[:content].last
+    assert_match(/쓰기 도구 issue_update 실행을 보류했습니다/, deferred_result[:content])
+  end
+
+  test "handle_tool_calls executes only one write tool per response" do
+    chatbot = build_chatbot
+
+    response = {
+      'content' => [
+        { 'type' => 'tool_use', 'id' => 'tool-1', 'name' => 'issue_update', 'input' => { 'id' => 123, 'status_id' => 5 } },
+        { 'type' => 'tool_use', 'id' => 'tool-2', 'name' => 'issue_relation_create', 'input' => { 'issue_id' => 123, 'issue_to_id' => 124, 'relation_type' => 'relates' } }
+      ]
+    }
+
+    executed_tools = []
+
+    chatbot.stub(:execute_mcp_tool, lambda { |tool_name, _tool_input|
+      executed_tools << tool_name
+      { 'ok' => true, 'tool' => tool_name }
+    }) do
+      chatbot.stub(:invoke_model, lambda { |request_body, thinking_message: nil, event_handler: nil|
+        { 'content' => [{ 'type' => 'text', 'text' => 'next step' }] }
+      }) do
+        chatbot.send(:handle_tool_calls, response)
+      end
+    end
+
+    assert_equal ['issue_update'], executed_tools
+
+    last_history_entry = chatbot.instance_variable_get(:@conversation_history).last
+    deferred_result = last_history_entry[:content].last
+    assert_match(/한 단계에서 하나씩만 실행합니다/, deferred_result[:content])
+  end
+
+  test "guard retry still triggers capability retry after read-only tool usage" do
+    chatbot = build_chatbot
+    chatbot.instance_variable_set(:@real_tool_calls, 1)
+
+    response = {
+      'content' => [
+        {
+          'type' => 'text',
+          'text' => '죄송합니다, 현재 수정 기능은 제공되지 않으며 조회만 가능합니다.'
+        }
+      ]
+    }
+
+    retry_info = chatbot.send(:guard_retry_instruction, response, '이슈 123 상태를 QA로 변경해줘')
+
+    assert_not_nil retry_info
+    assert_equal true, retry_info[:force_all_tools]
+    assert_equal({ type: 'any' }, retry_info[:tool_choice])
+  end
+
+  test "guard retry treats failed write attempts as insufficient for completion claims" do
+    chatbot = build_chatbot
+    chatbot.instance_variable_set(:@real_tool_calls, 1)
+    chatbot.instance_variable_set(:@write_tool_calls, 1)
+
+    response = {
+      'content' => [
+        {
+          'type' => 'text',
+          'text' => '이슈 123 상태를 QA로 변경했습니다.'
+        }
+      ]
+    }
+
+    retry_info = chatbot.send(:guard_retry_instruction, response, '이슈 123 상태를 QA로 변경해줘')
+
+    assert_not_nil retry_info
+    assert_equal true, retry_info[:force_all_tools]
+    assert_match(/성공 결과/, retry_info[:instruction])
   end
 
   test "guard retry instruction forces tool retry after capability refusal" do
