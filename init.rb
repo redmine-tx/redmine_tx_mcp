@@ -31,6 +31,9 @@ Rails.application.config.to_prepare do
     redmine_tx_mcp/anthropic_models_service
     redmine_tx_mcp/openai_adapter
     redmine_tx_mcp/openai_models_service
+    redmine_tx_mcp/chatbot_mutation_workflow
+    redmine_tx_mcp/chatbot_run_guard
+    redmine_tx_mcp/chatbot_loop_guard
     redmine_tx_mcp/chatbot_logger
     redmine_tx_mcp/claude_chatbot
     redmine_tx_mcp/llm_service

@@ -1,4 +1,4 @@
-require File.expand_path('test_helper', __dir__)
+require File.expand_path('support/chatbot_unit_helper', __dir__)
 
 class ClaudeChatbotTest < ActiveSupport::TestCase
   def build_chatbot
@@ -434,5 +434,468 @@ class ClaudeChatbotTest < ActiveSupport::TestCase
     assert_not_nil retry_info
     assert_equal true, retry_info[:force_all_tools]
     assert_equal({ type: 'any' }, retry_info[:tool_choice])
+  end
+
+  test "chatbot run guard returns timeout stop signal" do
+    ticks = [0.0, 1.3]
+    guard = RedmineTxMcp::ChatbotRunGuard.new(
+      max_iterations: 3,
+      max_elapsed_seconds: 1.0,
+      abort_check: proc { false },
+      now_proc: proc { ticks.shift || 1.3 }
+    )
+
+    signal = guard.check!(0)
+
+    assert_equal 'timeout', signal.reason
+    assert_equal 0, signal.iteration_count
+    assert_operator signal.elapsed_ms, :>=, 1_300
+  end
+
+  test "chatbot loop guard blocks repeated identical results" do
+    guard = RedmineTxMcp::ChatbotLoopGuard.new
+    params = { 'id' => 123 }
+
+    5.times do
+      guard.record_call('issue_get', params)
+      guard.record_outcome('issue_get', params, { 'id' => 123, 'status' => 'New' })
+    end
+
+    decision = guard.detect_before_call('issue_get', params)
+
+    assert_equal true, decision.blocked
+    assert_equal 'no_progress', decision.detector
+    assert_equal 6, decision.count
+  end
+
+  test "chatbot loop guard does not block progressing repeated reads" do
+    guard = RedmineTxMcp::ChatbotLoopGuard.new
+    params = { 'id' => 123 }
+
+    5.times do |index|
+      guard.record_call('issue_get', params)
+      guard.record_outcome('issue_get', params, { 'id' => 123, 'status' => "S#{index}" })
+    end
+
+    decision = guard.detect_before_call('issue_get', params)
+
+    assert_equal false, decision.blocked
+  end
+
+  test "chatbot loop guard blocks ping pong loops" do
+    guard = RedmineTxMcp::ChatbotLoopGuard.new
+    issue_params = { 'id' => 123 }
+    user_params = { 'id' => 7 }
+
+    3.times do
+      guard.record_call('issue_get', issue_params)
+      guard.record_outcome('issue_get', issue_params, { 'id' => 123, 'status' => 'New' })
+      guard.record_call('user_get', user_params)
+      guard.record_outcome('user_get', user_params, { 'id' => 7, 'login' => 'alice' })
+    end
+
+    decision = guard.detect_before_call('issue_get', issue_params)
+
+    assert_equal true, decision.blocked
+    assert_equal 'ping_pong', decision.detector
+  end
+
+  test "resolve_response stops on hard iteration cap" do
+    chatbot = build_chatbot
+    chatbot.instance_variable_set(:@tool_call_budget, 10)
+    chatbot.instance_variable_set(
+      :@run_guard,
+      RedmineTxMcp::ChatbotRunGuard.new(
+        max_iterations: 1,
+        max_elapsed_seconds: 60,
+        abort_check: proc { false },
+        now_proc: proc { 0.0 }
+      )
+    )
+
+    response = {
+      'content' => [
+        { 'type' => 'tool_use', 'id' => 'tool-1', 'name' => 'issue_get', 'input' => { 'id' => 123 } }
+      ]
+    }
+
+    chatbot.stub(:handle_tool_calls, lambda { |_resp, event_handler: nil|
+      response
+    }) do
+      result = chatbot.send(:resolve_response, response, '이슈 123 조회')
+      text = chatbot.send(:extract_text_content, result)
+
+      assert_match(/반복 횟수 제한/, text)
+      assert_equal 'hard_cap', chatbot.instance_variable_get(:@run_stop_reason)
+    end
+  end
+
+  test "resolve_response stops on abort at iteration boundary" do
+    chatbot = build_chatbot
+    chatbot.instance_variable_set(:@tool_call_budget, 10)
+    abort_requested = false
+    chatbot.instance_variable_set(
+      :@run_guard,
+      RedmineTxMcp::ChatbotRunGuard.new(
+        max_iterations: 3,
+        max_elapsed_seconds: 60,
+        abort_check: proc { abort_requested },
+        now_proc: proc { 0.0 }
+      )
+    )
+
+    response = {
+      'content' => [
+        { 'type' => 'tool_use', 'id' => 'tool-1', 'name' => 'issue_get', 'input' => { 'id' => 123 } }
+      ]
+    }
+
+    chatbot.stub(:handle_tool_calls, lambda { |_resp, event_handler: nil|
+      abort_requested = true
+      response
+    }) do
+      result = chatbot.send(:resolve_response, response, '이슈 123 조회')
+      text = chatbot.send(:extract_text_content, result)
+
+      assert_match(/중단/, text)
+      assert_equal 'abort', chatbot.instance_variable_get(:@run_stop_reason)
+    end
+  end
+
+  test "handle_tool_calls blocks repeated no progress reads before execution" do
+    chatbot = build_chatbot
+    response = {
+      'content' => [
+        { 'type' => 'tool_use', 'id' => 'tool-1', 'name' => 'issue_get', 'input' => { 'id' => 123 } }
+      ]
+    }
+
+    execution_count = 0
+    chatbot.stub(:execute_mcp_tool, lambda { |_tool_name, _tool_input|
+      execution_count += 1
+      { 'id' => 123, 'status' => 'New' }
+    }) do
+      chatbot.stub(:invoke_model, lambda { |request_body, thinking_message: nil, event_handler: nil|
+        { 'content' => [{ 'type' => 'text', 'text' => 'ok' }] }
+      }) do
+        5.times { chatbot.send(:handle_tool_calls, response) }
+        chatbot.send(:handle_tool_calls, response)
+      end
+    end
+
+    assert_equal 5, execution_count
+    last_history_entry = chatbot.instance_variable_get(:@conversation_history).last
+    block_result = last_history_entry[:content].last
+    assert_match(/\[loop_guard:no_progress\]/, block_result[:content])
+  end
+
+  test "guard retry requires read back verification after successful write" do
+    chatbot = build_chatbot
+    chatbot.send(:select_tools_for_query, '이슈 123 상태를 QA로 변경해줘')
+
+    workflow = chatbot.instance_variable_get(:@mutation_workflow)
+    workflow.record_tool_result(
+      'issue_update',
+      { 'id' => 123, 'status_id' => 5 },
+      { 'id' => 123, 'status' => { 'id' => 5, 'name' => 'QA' } }
+    )
+
+    response = {
+      'content' => [
+        { 'type' => 'text', 'text' => '이슈 123 상태를 QA로 변경했습니다.' }
+      ]
+    }
+
+    retry_info = chatbot.send(:guard_retry_instruction, response, '이슈 123 상태를 QA로 변경해줘')
+
+    assert_not_nil retry_info
+    assert_equal true, retry_info[:force_all_tools]
+    assert_match(/read-back 검증/, retry_info[:instruction])
+  end
+
+  test "handle_tool_calls blocks new write until previous mutation is verified" do
+    chatbot = build_chatbot
+    chatbot.instance_variable_get(:@mutation_workflow).record_tool_result(
+      'issue_update',
+      { 'id' => 123, 'status_id' => 5 },
+      { 'id' => 123, 'status' => { 'id' => 5, 'name' => 'QA' } }
+    )
+
+    response = {
+      'content' => [
+        { 'type' => 'tool_use', 'id' => 'tool-1', 'name' => 'issue_relation_create', 'input' => { 'issue_id' => 123, 'related_issue_id' => 124, 'relation_type' => 'relates' } }
+      ]
+    }
+
+    executed_tools = []
+
+    chatbot.stub(:execute_mcp_tool, lambda { |tool_name, _tool_input|
+      executed_tools << tool_name
+      { 'ok' => true }
+    }) do
+      chatbot.stub(:invoke_model, lambda { |request_body, thinking_message: nil, event_handler: nil|
+        { 'content' => [{ 'type' => 'text', 'text' => 'next step' }] }
+      }) do
+        chatbot.send(:handle_tool_calls, response)
+      end
+    end
+
+    assert_equal [], executed_tools
+    last_history_entry = chatbot.instance_variable_get(:@conversation_history).last
+    deferred_result = last_history_entry[:content].last
+    assert_match(/read-back 검증이 아직 끝나지 않았습니다/, deferred_result[:content])
+  end
+
+  test "handle_tool_calls records verification notes and clears pending mutation after matching issue_get" do
+    chatbot = build_chatbot
+    update_response = {
+      'content' => [
+        { 'type' => 'tool_use', 'id' => 'tool-1', 'name' => 'issue_update', 'input' => { 'id' => 123, 'status_id' => 5 } }
+      ]
+    }
+    verify_response = {
+      'content' => [
+        { 'type' => 'tool_use', 'id' => 'tool-2', 'name' => 'issue_get', 'input' => { 'id' => 123 } }
+      ]
+    }
+
+    chatbot.stub(:execute_mcp_tool, lambda { |tool_name, _tool_input|
+      case tool_name
+      when 'issue_update'
+        { 'id' => 123, 'status' => { 'id' => 5, 'name' => 'QA' } }
+      when 'issue_get'
+        { 'id' => 123, 'status' => { 'id' => 5, 'name' => 'QA' } }
+      else
+        { 'ok' => true }
+      end
+    }) do
+      chatbot.stub(:invoke_model, lambda { |request_body, thinking_message: nil, event_handler: nil|
+        { 'content' => [{ 'type' => 'text', 'text' => 'next step' }] }
+      }) do
+        chatbot.send(:handle_tool_calls, update_response)
+        assert_equal true, chatbot.instance_variable_get(:@mutation_workflow).pending_verification?
+
+        chatbot.send(:handle_tool_calls, verify_response)
+      end
+    end
+
+    assert_equal false, chatbot.instance_variable_get(:@mutation_workflow).pending_verification?
+    last_history_entry = chatbot.instance_variable_get(:@conversation_history).last
+    verification_result = last_history_entry[:content].last
+    assert_match(/검증이 통과했습니다/, verification_result[:content])
+  end
+
+  test "session state export and restore preserves mutation evidence for ambiguous follow up" do
+    chatbot = build_chatbot
+    workflow = chatbot.instance_variable_get(:@mutation_workflow)
+    workflow.record_tool_result('issue_get', { 'id' => 123 }, { 'id' => 123, 'status' => { 'id' => 1, 'name' => 'New' } })
+    workflow.record_tool_result('spreadsheet_list_uploads', {}, { 'files' => [{ 'stored_name' => 'report.xlsx' }] })
+    workflow.record_tool_result(
+      'issue_update',
+      { 'id' => 123, 'status_id' => 5 },
+      { 'id' => 123, 'status' => { 'id' => 5, 'name' => 'QA' } }
+    )
+
+    snapshot = chatbot.export_session_state
+
+    restored = build_chatbot
+    restored.restore_session_state(snapshot)
+    restored.send(:reset_turn_state)
+    restored.send(:reset_metrics)
+    restored.send(:select_tools_for_query, '계속 진행해줘')
+
+    tool_names = restored.send(:available_mcp_tools).map { |tool| tool[:name] }
+
+    assert_includes tool_names, 'issue_get'
+    assert_includes tool_names, 'issue_update'
+    assert_includes tool_names, 'spreadsheet_list_uploads'
+    assert_equal 'report.xlsx', restored.instance_variable_get(:@mutation_workflow).active_workspace_file
+  end
+
+  test "prepare_messages_for_model compacts older history and keeps workflow evidence" do
+    chatbot = build_chatbot
+    workflow = chatbot.instance_variable_get(:@mutation_workflow)
+    workflow.record_tool_result('issue_get', { 'id' => 123 }, { 'id' => 123, 'status' => { 'id' => 1, 'name' => 'New' } })
+    workflow.record_tool_result('spreadsheet_list_uploads', {}, { 'files' => [{ 'stored_name' => 'report.xlsx' }] })
+
+    20.times do |index|
+      role = index.even? ? 'user' : 'assistant'
+      chatbot.send(:add_to_conversation, role, "message #{index} " * 200)
+    end
+
+    original_size = chatbot.instance_variable_get(:@conversation_history).size
+    prepared = chatbot.send(
+      :prepare_messages_for_model,
+      chatbot.instance_variable_get(:@conversation_history),
+      trigger: 'manual_compaction',
+      force_compaction: true
+    )
+
+    first_message = prepared.first[:content] || prepared.first['content']
+    assert_match(/\[Earlier conversation summary/, first_message)
+    assert_match(/Recent issue IDs: #123/, first_message)
+    assert_match(/report\.xlsx/, first_message)
+    assert_operator prepared.size, :<, original_size
+  end
+
+  test "invoke_model compacts and retries after context overflow" do
+    chatbot = build_chatbot
+
+    18.times do |index|
+      role = index.even? ? 'user' : 'assistant'
+      chatbot.send(:add_to_conversation, role, "history #{index} " * 120)
+    end
+
+    request_body = chatbot.send(:build_request_body, messages: chatbot.instance_variable_get(:@conversation_history))
+    attempts = []
+
+    chatbot.stub(:call_claude_api, lambda { |body, provider: chatbot.instance_variable_get(:@provider), &block|
+      attempts << body
+      if attempts.size == 1
+        raise RedmineTxMcp::ClaudeChatbot::ProviderRequestError.new(
+          'maximum context length exceeded',
+          provider: provider,
+          context_overflow: true
+        )
+      end
+
+      { 'content' => [{ 'type' => 'text', 'text' => 'ok' }], 'usage' => {} }
+    }) do
+      result = chatbot.send(:invoke_model, request_body)
+      assert_equal 'ok', chatbot.send(:extract_text_content, result)
+    end
+
+    assert_equal 2, attempts.size
+    compacted_messages = attempts.last[:messages] || attempts.last['messages']
+    compacted_summary = compacted_messages.first[:content] || compacted_messages.first['content']
+    assert_match(/trigger=context_overflow/, compacted_summary)
+    assert_equal 1, chatbot.instance_variable_get(:@metrics)[:context_overflow_retries]
+  end
+
+  test "invoke_model falls back to alternate provider on retryable error" do
+    chatbot = RedmineTxMcp::ClaudeChatbot.new(
+      api_key: 'anthropic-test-key',
+      provider: 'anthropic',
+      endpoint_url: 'http://example.test/v1/chat/completions',
+      model: 'test-model'
+    )
+
+    request_body = chatbot.send(:build_request_body, messages: [{ role: 'user', content: '상태 알려줘' }])
+    attempts = []
+    events = []
+
+    chatbot.stub(:call_claude_api, lambda { |_body, provider: chatbot.instance_variable_get(:@provider), &block|
+      attempts << provider
+      if provider == 'anthropic'
+        raise RedmineTxMcp::ClaudeChatbot::ProviderRequestError.new(
+          'Anthropic API Error: 503',
+          provider: provider,
+          retryable: true,
+          http_status: 503
+        )
+      end
+
+      { 'content' => [{ 'type' => 'text', 'text' => 'fallback ok' }], 'usage' => {} }
+    }) do
+      result = chatbot.send(:invoke_model, request_body, event_handler: proc { |event| events << event })
+      assert_equal 'fallback ok', chatbot.send(:extract_text_content, result)
+    end
+
+    assert_equal %w[anthropic openai], attempts
+    fallback_event = events.find { |event| event[:type] == 'phase' && event[:phase] == 'provider_fallback' }
+    refute_nil fallback_event
+    assert_equal 'anthropic', fallback_event[:from]
+    assert_equal 'openai', fallback_event[:to]
+  end
+
+  test "invoke_model does not fallback after write when verification phase is not pending" do
+    chatbot = RedmineTxMcp::ClaudeChatbot.new(
+      api_key: 'anthropic-test-key',
+      provider: 'anthropic',
+      endpoint_url: 'http://example.test/v1/chat/completions',
+      model: 'test-model'
+    )
+    chatbot.instance_variable_set(:@write_tool_calls, 1)
+
+    request_body = chatbot.send(:build_request_body, messages: [{ role: 'user', content: '상태 알려줘' }])
+    attempts = []
+
+    error = assert_raises(RedmineTxMcp::ClaudeChatbot::ProviderRequestError) do
+      chatbot.stub(:call_claude_api, lambda { |_body, provider: chatbot.instance_variable_get(:@provider), &block|
+        attempts << provider
+        raise RedmineTxMcp::ClaudeChatbot::ProviderRequestError.new(
+          'Anthropic API Error: 503',
+          provider: provider,
+          retryable: true,
+          http_status: 503
+        )
+      }) do
+        chatbot.send(:invoke_model, request_body)
+      end
+    end
+
+    assert_match(/503/, error.message)
+    assert_equal ['anthropic'], attempts
+    assert_equal 0, chatbot.instance_variable_get(:@metrics)[:provider_fallbacks]
+  end
+
+  test "handle_tool_calls emits phase and verify events for mutation workflow" do
+    chatbot = build_chatbot
+    response = {
+      'content' => [
+        { 'type' => 'tool_use', 'id' => 'tool-1', 'name' => 'issue_update', 'input' => { 'id' => 123, 'status_id' => 5 } }
+      ]
+    }
+    events = []
+
+    chatbot.stub(:execute_mcp_tool, lambda { |_tool_name, _tool_input|
+      { 'id' => 123, 'status' => { 'id' => 5, 'name' => 'QA' } }
+    }) do
+      chatbot.stub(:invoke_model, lambda { |request_body, thinking_message: nil, event_handler: nil|
+        { 'content' => [{ 'type' => 'text', 'text' => 'next step' }] }
+      }) do
+        chatbot.send(:handle_tool_calls, response, event_handler: proc { |event| events << event })
+      end
+    end
+
+    phase_event = events.find { |event| event[:type] == 'phase' && event[:phase] == 'write' }
+    verify_event = events.find { |event| event[:type] == 'verify' && event[:status] == 'pending' }
+
+    refute_nil phase_event
+    refute_nil verify_event
+    assert_equal 'issue_update', phase_event[:tool]
+    assert_equal 'issue_update', verify_event[:tool]
+    assert_includes verify_event[:verify_with], 'issue_get'
+  end
+
+  test "resolve_response emits stop reason events" do
+    chatbot = build_chatbot
+    chatbot.instance_variable_set(:@tool_call_budget, 10)
+    chatbot.instance_variable_set(
+      :@run_guard,
+      RedmineTxMcp::ChatbotRunGuard.new(
+        max_iterations: 1,
+        max_elapsed_seconds: 60,
+        abort_check: proc { false },
+        now_proc: proc { 0.0 }
+      )
+    )
+
+    response = {
+      'content' => [
+        { 'type' => 'tool_use', 'id' => 'tool-1', 'name' => 'issue_get', 'input' => { 'id' => 123 } }
+      ]
+    }
+    events = []
+
+    chatbot.stub(:handle_tool_calls, lambda { |_resp, event_handler: nil|
+      response
+    }) do
+      chatbot.send(:resolve_response, response, '이슈 123 조회', event_handler: proc { |event| events << event })
+    end
+
+    stop_event = events.find { |event| event[:type] == 'stop_reason' }
+    refute_nil stop_event
+    assert_equal 'hard_cap', stop_event[:reason]
   end
 end

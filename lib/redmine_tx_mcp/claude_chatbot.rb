@@ -15,6 +15,50 @@ module RedmineTxMcp
     MAX_HISTORY_CHARS = 80_000
     MAX_PERSISTED_MESSAGES = 60
     MAX_GUARD_RETRIES = 2
+    DEFAULT_MAX_RUN_SECONDS = 120
+    COMPACTION_TRIGGER_MESSAGE_COUNT = 28
+    COMPACTION_KEEP_RECENT_MESSAGES = 12
+    COMPACTION_TRIGGER_CHARS = 60_000
+    COMPACTION_SUMMARY_CHARS = 1_800
+    MIN_LOOP_ITERATIONS = 8
+    EXTRA_LOOP_ITERATIONS = 6
+    ABORT_CACHE_TTL = 5.minutes
+    ABORT_CACHE_KEY_PREFIX = 'redmine_tx_mcp:chatbot_abort'.freeze
+    RETRYABLE_HTTP_STATUSES = [408, 409, 425, 429, 500, 502, 503, 504].freeze
+    CONTEXT_OVERFLOW_PATTERNS = [
+      /context(?:\s+window|\s+length)?/i,
+      /too many tokens/i,
+      /prompt is too long/i,
+      /maximum context length/i,
+      /input is too long/i,
+      /request too large/i
+    ].freeze
+    DEFAULT_FEATURE_FLAGS = {
+      'enhanced_metrics' => true,
+      'adaptive_compaction' => true,
+      'provider_fallback' => true,
+      'streaming_status' => true
+    }.freeze
+
+    class ProviderRequestError < StandardError
+      attr_reader :provider, :http_status, :retryable, :context_overflow
+
+      def initialize(message, provider:, http_status: nil, retryable: false, context_overflow: false)
+        super(message)
+        @provider = provider.to_s
+        @http_status = http_status
+        @retryable = retryable
+        @context_overflow = context_overflow
+      end
+
+      def retryable?
+        @retryable
+      end
+
+      def context_overflow?
+        @context_overflow
+      end
+    end
 
     PLAN_UPDATE_TOOL = {
       name: 'plan_update',
@@ -156,6 +200,7 @@ module RedmineTxMcp
       session_start = Process.clock_gettime(Process::CLOCK_MONOTONIC)
       reset_turn_state
       reset_metrics
+      clear_abort_request
 
       begin
         ChatbotLogger.log_user_query(
@@ -173,7 +218,7 @@ module RedmineTxMcp
 
         # Create system message with MCP tools information
         # Layer 3: Budget-managed conversation history
-        clean_messages = clean_conversation_history(budget_conversation_history(@conversation_history))
+        clean_messages = prepare_messages_for_model(@conversation_history, trigger: 'turn_start')
 
         response = invoke_model(build_request_body(messages: clean_messages))
         response = resolve_response(response, user_message)
@@ -202,6 +247,7 @@ module RedmineTxMcp
         }
 
       rescue => e
+        register_stop_reason('error', elapsed_ms: elapsed_since(session_start))
         ChatbotLogger.log_error(session_id: conversation_id, context: "chat", error_class: e.class, message: e.message, backtrace: e.backtrace)
 
         log_session_summary(session_start)
@@ -219,6 +265,8 @@ module RedmineTxMcp
       session_start = Process.clock_gettime(Process::CLOCK_MONOTONIC)
       reset_turn_state
       reset_metrics
+      clear_abort_request
+      stream_handler = proc { |event| emit_event(proc { |payload| yield(payload) }, event) }
 
       begin
         ChatbotLogger.log_user_query(
@@ -234,9 +282,19 @@ module RedmineTxMcp
         prepare_tool_call_budget(user_message)
         execution_plan = build_execution_plan(user_message)
 
-        clean_messages = clean_conversation_history(budget_conversation_history(@conversation_history))
+        clean_messages = prepare_messages_for_model(@conversation_history, trigger: 'turn_start')
 
         request_body = build_request_body(messages: clean_messages)
+
+        if (workspace_event = workspace_event_payload)
+          stream_handler.call(workspace_event.merge(type: 'workspace'))
+        end
+
+        stream_handler.call(
+          type: 'phase',
+          phase: execution_plan ? 'planning' : 'analysis',
+          status: execution_plan ? execution_plan[:status] : '요청을 분석 중입니다...'
+        )
 
         if execution_plan
           ChatbotLogger.log_info(
@@ -244,18 +302,18 @@ module RedmineTxMcp
             context: "PLAN",
             detail: execution_plan[:steps].join(" | ")
           )
-          yield(execution_plan.merge(type: 'plan'))
+          stream_handler.call(execution_plan.merge(type: 'plan'))
         end
 
         response = invoke_model(
           request_body,
           thinking_message: execution_plan ? execution_plan[:status] : 'Thinking...',
-          event_handler: proc { |event| yield(event) }
+          event_handler: stream_handler
         )
         response = resolve_response(
           response,
           user_message,
-          event_handler: proc { |event| yield(event) }
+          event_handler: stream_handler
         )
 
         assistant_message = extract_text_content(response)
@@ -270,18 +328,19 @@ module RedmineTxMcp
 
         log_session_summary(session_start)
 
-        yield({ type: 'answer', message: assistant_message })
-        yield({ type: 'done' })
+        stream_handler.call(type: 'answer', message: assistant_message)
+        stream_handler.call(type: 'done')
 
         { success: true, message: assistant_message, conversation_id: conversation_id }
 
       rescue => e
+        register_stop_reason('error', elapsed_ms: elapsed_since(session_start))
         ChatbotLogger.log_error(session_id: conversation_id, context: "chat_stream", error_class: e.class, message: e.message, backtrace: e.backtrace)
 
         log_session_summary(session_start)
 
-        yield({ type: 'error', message: e.message })
-        yield({ type: 'done' })
+        stream_handler.call(type: 'error', message: e.message)
+        stream_handler.call(type: 'done')
 
         { success: false, error: e.message }
       end
@@ -313,6 +372,7 @@ module RedmineTxMcp
 
       agent_state = snapshot['agent_state'] || snapshot[:agent_state]
       restore_agent_state(agent_state)
+      @session_restored = true
     end
 
     def conversation_id
@@ -341,6 +401,8 @@ module RedmineTxMcp
       parts << "Current user: #{User.current&.name || 'Anonymous'}"
       workspace_summary = workspace_context_summary
       parts << workspace_summary if workspace_summary.present?
+      workflow_context = @mutation_workflow&.prompt_context
+      parts << "Recent workflow context:\n#{workflow_context}" if workflow_context.present?
 
       parts.join("\n\n")
     end
@@ -443,10 +505,10 @@ module RedmineTxMcp
       end
     end
 
-    def call_claude_api(request_body, &on_chunk)
+    def call_claude_api(request_body, provider: @provider, &on_chunk)
       api_start = Process.clock_gettime(Process::CLOCK_MONOTONIC)
 
-      parsed = if @provider == 'openai'
+      parsed = if provider.to_s == 'openai'
         call_openai_api(request_body, &on_chunk)
       else
         call_anthropic_api(request_body)
@@ -456,6 +518,8 @@ module RedmineTxMcp
 
       # Track metrics and log detail
       @metrics[:api_calls] += 1
+      @metrics[:last_provider] = provider.to_s
+      @metrics[:providers_used] << provider.to_s unless @metrics[:providers_used].include?(provider.to_s)
       usage = parsed['usage'] || {}
       input_tokens = usage['input_tokens'] || 0
       output_tokens = usage['output_tokens'] || 0
@@ -480,11 +544,16 @@ module RedmineTxMcp
         budget_message_count: @metrics[:last_budget_message_count],
         tools_count: tools.size,
         tool_names: @selected_tool_names&.join(', '),
+        provider: provider.to_s,
+        api_duration_ms: api_duration_ms,
         input_tokens: input_tokens,
         output_tokens: output_tokens
       )
 
       parsed
+    rescue ProviderRequestError => e
+      @metrics[:provider_failures] += 1
+      raise e
     end
 
     def call_anthropic_api(request_body)
@@ -496,7 +565,7 @@ module RedmineTxMcp
 
       request = Net::HTTP::Post.new(uri)
       request['Content-Type'] = 'application/json'
-      request['x-api-key'] = @api_key
+      request['x-api-key'] = anthropic_api_key
       request['anthropic-version'] = '2023-06-01'
       request.body = JSON.generate(request_body)
 
@@ -506,36 +575,84 @@ module RedmineTxMcp
 
       unless response.code == '200'
         ChatbotLogger.log_error(session_id: conversation_id, context: "Claude API HTTP #{response.code}", error_class: "HttpError", message: response.body.to_s[0..500])
-        raise "Claude API Error: #{response.code} - #{response.body}"
+        raise build_provider_http_error('anthropic', response.code.to_i, response.body)
       end
 
       JSON.parse(response.body)
+    rescue ProviderRequestError
+      raise
+    rescue JSON::ParserError => e
+      raise ProviderRequestError.new(
+        "Anthropic API parse error: #{e.message}",
+        provider: 'anthropic',
+        retryable: true
+      )
+    rescue Timeout::Error, EOFError, IOError, SocketError,
+           Errno::ECONNRESET, Errno::ECONNREFUSED, Errno::ETIMEDOUT => e
+      raise ProviderRequestError.new(
+        "Anthropic API request failed: #{e.message}",
+        provider: 'anthropic',
+        retryable: true
+      )
     end
 
     def call_openai_api(request_body, &on_chunk)
       # OpenAI request debug logging omitted (verbose)
       if block_given?
-        OpenaiAdapter.call_streaming(request_body, api_key: @api_key, endpoint_url: @endpoint_url, &on_chunk)
+        OpenaiAdapter.call_streaming(request_body, api_key: openai_api_key, endpoint_url: openai_endpoint_url, &on_chunk)
       else
-        OpenaiAdapter.call(request_body, api_key: @api_key, endpoint_url: @endpoint_url)
+        OpenaiAdapter.call(request_body, api_key: openai_api_key, endpoint_url: openai_endpoint_url)
       end
+    rescue ProviderRequestError
+      raise
+    rescue Timeout::Error, EOFError, IOError, SocketError,
+           Errno::ECONNRESET, Errno::ECONNREFUSED, Errno::ETIMEDOUT => e
+      raise ProviderRequestError.new(
+        "OpenAI-compatible API request failed: #{e.message}",
+        provider: 'openai',
+        retryable: true
+      )
+    rescue => e
+      raise classify_openai_error(e)
     end
 
     def resolve_response(response, user_message, event_handler: nil)
       @metrics[:tool_call_depth] = @real_tool_calls
+      @run_guard ||= build_run_guard
+      iteration_count = 0
 
       loop do
-        while response_has_tool_use?(response)
+        @run_iteration_count = iteration_count
+
+        if (stop_signal = @run_guard.check!(iteration_count))
+          response = stop_response_for(
+            stop_signal.reason,
+            event_handler: event_handler,
+            detector: @run_loop_detector
+          )
+          register_stop_reason(
+            stop_signal.reason,
+            iteration_count: stop_signal.iteration_count,
+            elapsed_ms: stop_signal.elapsed_ms,
+            detector: @run_loop_detector
+          )
+          break
+        end
+
+        if response_has_tool_use?(response)
           if tool_call_budget_exhausted?
+            @metrics[:tool_budget_exhaustions] += 1
             ChatbotLogger.log_info(
               session_id: conversation_id,
               context: "TOOL LOOP",
               detail: "MAX CALLS #{max_tool_calls} reached, forcing final summary"
             )
-            response = summarize_without_tools(
-              instruction: '[시스템] 도구 호출 한도에 도달했습니다. 이미 수집한 결과만 사용해서 답변을 마무리하세요.',
-              thinking_message: '도구 호출 한도에 도달해 현재까지 결과를 정리 중입니다...',
-              event_handler: event_handler
+            response = stop_response_for('tool_budget', event_handler: event_handler)
+            register_stop_reason(
+              'tool_budget',
+              iteration_count: iteration_count,
+              elapsed_ms: @run_guard.elapsed_ms,
+              detector: @run_loop_detector
             )
             break
           end
@@ -544,24 +661,26 @@ module RedmineTxMcp
           ChatbotLogger.log_info(
             session_id: conversation_id,
             context: "TOOL LOOP",
-            detail: "calls: #{@real_tool_calls}/#{max_tool_calls} | remaining: #{remaining_tool_calls}"
+            detail: "calls: #{@real_tool_calls}/#{max_tool_calls} | remaining: #{remaining_tool_calls} | iteration: #{iteration_count}"
           )
           response = handle_tool_calls(response, event_handler: event_handler)
+          iteration_count += 1
+          next
         end
 
-        if response_has_tool_use?(response)
-          ChatbotLogger.log_info(
-            session_id: conversation_id,
-            context: "TOOL LOOP",
-            detail: "tool requests remained after the #{max_tool_calls} call budget was exhausted"
+        retry_info = guard_retry_instruction(response, user_message)
+        unless retry_info
+          register_stop_reason(
+            'completed',
+            iteration_count: iteration_count,
+            elapsed_ms: @run_guard.elapsed_ms,
+            detector: @run_loop_detector
           )
           break
         end
 
-        retry_info = guard_retry_instruction(response, user_message)
-        break unless retry_info
-
         response = retry_response(response, retry_info, event_handler: event_handler)
+        iteration_count += 1
       end
 
       response
@@ -604,7 +723,31 @@ module RedmineTxMcp
             next
           end
 
+          loop_decision = @loop_guard.detect_before_call(tool_name, tool_input)
+          if loop_decision.emit_warning
+            @metrics[:loop_guard_warnings] += 1
+            ChatbotLogger.log_info(
+              session_id: conversation_id,
+              context: "LOOP GUARD",
+              detail: "#{tool_name} #{loop_decision.detector} warning count=#{loop_decision.count}"
+            )
+          end
+
+          if loop_decision.blocked
+            @metrics[:loop_guard_blocks] += 1
+            @run_loop_detector = loop_decision.detector
+            warning = "[loop_guard:#{loop_decision.detector}] #{RedmineTxMcp::ChatbotLoopGuard.format_block_message(loop_decision)}"
+            ChatbotLogger.log_info(session_id: conversation_id, context: "LOOP GUARD", detail: warning)
+            tool_results << {
+              type: 'tool_result',
+              tool_use_id: content['id'],
+              content: warning
+            }
+            next
+          end
+
           if tool_call_budget_exhausted?
+            @metrics[:tool_budget_exhaustions] += 1
             warning = "도구 호출 한도(#{max_tool_calls})에 도달해 #{tool_name} 실행을 건너뛰었습니다. 현재까지 결과만으로 정리하세요."
             ChatbotLogger.log_info(session_id: conversation_id, context: "TOOL BUDGET", detail: warning)
             tool_results << {
@@ -637,23 +780,63 @@ module RedmineTxMcp
             next
           end
 
-          event_handler&.call({ type: 'tool_call', tool: tool_name, input: tool_input })
+          if side_effecting_tool?(tool_name) && @mutation_workflow.pending_verification?
+            warning = deferred_write_tool_message(tool_name, @mutation_workflow.verification_pending_message)
+            ChatbotLogger.log_info(session_id: conversation_id, context: "MUTATION VERIFY", detail: warning)
+            tool_results << {
+              type: 'tool_result',
+              tool_use_id: content['id'],
+              content: warning
+            }
+            next
+          end
+
+          tool_phase = if side_effecting_tool?(tool_name)
+                         'write'
+                       elsif @mutation_workflow.pending_verification? && @mutation_workflow.verify_with_tools.include?(tool_name.to_s)
+                         'verify'
+                       else
+                         'read'
+                       end
+          emit_event(event_handler, { type: 'phase', phase: tool_phase, tool: tool_name })
+          emit_event(event_handler, { type: 'verify', status: 'checking', tool: tool_name }) if tool_phase == 'verify'
+          emit_event(event_handler, { type: 'tool_call', tool: tool_name, input: tool_input })
 
           # Execute the tool (logging handled by execute_mcp_tool -> ChatbotLogger.log_tool_execution)
+          verification_before = {
+            pending: @mutation_workflow.pending_verification?,
+            failed: @mutation_workflow.verification_failed?
+          }
+          @loop_guard.record_call(tool_name, tool_input, tool_call_id: content['id'])
           result = execute_mcp_tool(tool_name, tool_input)
           record_tool_call!(tool_name, tool_input, result)
+          @loop_guard.record_outcome(
+            tool_name,
+            tool_input,
+            result,
+            is_error: tool_error_result?(result),
+            tool_call_id: content['id']
+          )
+          workflow_note = @mutation_workflow.record_tool_result(tool_name, tool_input, result)
           @real_tool_calls += 1
           write_executed = true if side_effecting_tool?(tool_name)
           @write_tool_calls += 1 if side_effecting_tool?(tool_name)
           @successful_write_tool_calls += 1 if side_effecting_tool?(tool_name) && !tool_error_result?(result)
           @tool_results_since_last_plan += 1 unless tool_error_result?(result)
 
-          event_handler&.call({ type: 'tool_result', tool: tool_name })
+          emit_event(event_handler, { type: 'tool_result', tool: tool_name })
+          emit_verification_transition_event(event_handler, tool_name, verification_before)
 
           tool_results << {
             type: 'tool_result',
             tool_use_id: content['id'],
-            content: encoded_tool_content(result)
+            content: append_loop_warning_note(
+              append_loop_warning_note(
+                encoded_tool_content(result),
+                workflow_note
+              ),
+              RedmineTxMcp::ChatbotLoopGuard.format_warning_note(loop_decision)
+            )
           }
         end
 
@@ -669,7 +852,7 @@ module RedmineTxMcp
           add_to_conversation('user', truncated_results)
 
           # Layer 3: Budget-managed history
-          clean_messages = clean_conversation_history(budget_conversation_history(@conversation_history))
+          clean_messages = prepare_messages_for_model(@conversation_history, trigger: 'tool_results')
 
           # Replace the last user message (truncated) with full results for this API call only
           if clean_messages.last && clean_messages.last[:role] == 'user'
@@ -782,7 +965,13 @@ module RedmineTxMcp
       @metrics = {
         api_calls: 0, tool_executions: 0,
         input_tokens: 0, output_tokens: 0,
-        tool_call_depth: 0, last_budget_message_count: nil
+        tool_call_depth: 0, last_budget_message_count: nil,
+        compaction_runs: 0, compacted_messages: 0, compacted_chars: 0, last_compaction_trigger: nil,
+        provider_failures: 0, provider_fallbacks: 0, last_provider: nil, last_fallback_provider: nil, providers_used: [],
+        loop_guard_blocks: 0, loop_guard_warnings: 0, tool_budget_exhaustions: 0,
+        mutation_verify_successes: 0, mutation_verify_failures: 0,
+        session_restored: !!@session_restored, restored_follow_up_success: false,
+        spreadsheet_workflow_used: false, stream_events: 0, context_overflow_retries: 0
       }
     end
 
@@ -791,6 +980,8 @@ module RedmineTxMcp
       @matched_profiles = []
       @selection_confidence = 'none'
       @plan_state = nil
+      @mutation_workflow = RedmineTxMcp::ChatbotMutationWorkflow.new
+      @session_restored = false
     end
 
     def reset_turn_state
@@ -798,25 +989,58 @@ module RedmineTxMcp
       @tool_results_since_last_plan = 0
       @tool_call_budget = nil
       @tool_call_history = Hash.new { |hash, key| hash[key] = { attempts: 0, successes: 0, errors: 0 } }
+      @loop_guard = RedmineTxMcp::ChatbotLoopGuard.new
+      @run_guard = nil
       @real_tool_calls = 0
       @write_tool_calls = 0
       @successful_write_tool_calls = 0
       @guard_retry_counts = Hash.new(0)
+      @run_stop_reason = nil
+      @run_iteration_count = 0
+      @run_elapsed_ms = 0
+      @run_loop_detector = nil
     end
 
     def log_session_summary(session_start)
       total_ms = ((Process.clock_gettime(Process::CLOCK_MONOTONIC) - session_start) * 1000).round
+      ChatbotLogger.log_session_summary(session_summary_payload(total_duration_ms: total_ms))
+    end
+
+    def session_summary_payload(total_duration_ms:)
       history_chars = @conversation_history.sum { |m| message_chars(m) }
-      ChatbotLogger.log_session_summary(
+      {
         session_id: conversation_id,
         api_calls: @metrics[:api_calls],
         tool_executions: @metrics[:tool_executions],
         input_tokens: @metrics[:input_tokens],
         output_tokens: @metrics[:output_tokens],
-        total_duration_ms: total_ms,
+        total_duration_ms: total_duration_ms,
         history_message_count: @conversation_history.size,
-        history_chars: history_chars
-      )
+        history_chars: history_chars,
+        stop_reason: @run_stop_reason,
+        iteration_count: @run_iteration_count,
+        elapsed_ms: @run_elapsed_ms,
+        loop_detector: @run_loop_detector,
+        remaining_tool_budget: remaining_tool_calls,
+        compaction_runs: @metrics[:compaction_runs],
+        compacted_messages: @metrics[:compacted_messages],
+        compacted_chars: @metrics[:compacted_chars],
+        last_compaction_trigger: @metrics[:last_compaction_trigger],
+        provider_failures: @metrics[:provider_failures],
+        provider_fallbacks: @metrics[:provider_fallbacks],
+        last_provider: @metrics[:last_provider],
+        last_fallback_provider: @metrics[:last_fallback_provider],
+        providers_used: Array(@metrics[:providers_used]).join(' -> '),
+        loop_guard_blocks: @metrics[:loop_guard_blocks],
+        loop_guard_warnings: @metrics[:loop_guard_warnings],
+        tool_budget_exhaustions: @metrics[:tool_budget_exhaustions],
+        mutation_verify_successes: @metrics[:mutation_verify_successes],
+        mutation_verify_failures: @metrics[:mutation_verify_failures],
+        session_restored: @metrics[:session_restored],
+        restored_follow_up_success: @metrics[:restored_follow_up_success],
+        spreadsheet_workflow_used: @metrics[:spreadsheet_workflow_used],
+        context_overflow_retries: @metrics[:context_overflow_retries]
+      }
     end
 
     # ─── Layer 1: Tool result truncation ─────────────────────────
@@ -938,12 +1162,126 @@ module RedmineTxMcp
       end
     end
 
+    def prepare_messages_for_model(messages, trigger:, force_compaction: false)
+      compacted = compact_messages_if_needed(messages, trigger: trigger, force: force_compaction)
+      @conversation_history = compacted if messages.equal?(@conversation_history)
+      clean_conversation_history(budget_conversation_history(compacted))
+    end
+
+    def compact_messages_if_needed(messages, trigger:, force: false)
+      return messages unless feature_enabled?('adaptive_compaction')
+      return messages if messages.empty?
+      return messages unless force || compaction_needed?(messages)
+
+      keep_count = [COMPACTION_KEEP_RECENT_MESSAGES, messages.size - 1].min
+      head_count = messages.size - keep_count
+      return messages if head_count <= 1
+
+      older_messages = messages.first(head_count)
+      recent_messages = messages.last(keep_count)
+      summary = build_compaction_summary(older_messages, trigger: trigger)
+      return messages if summary.blank?
+
+      compacted = [{ role: 'user', content: summary }] + deep_dup(recent_messages)
+      record_compaction_metrics(older_messages, compacted, trigger)
+      compacted
+    end
+
+    def compaction_needed?(messages)
+      messages.size > COMPACTION_TRIGGER_MESSAGE_COUNT ||
+        messages.sum { |msg| message_chars(msg) } > COMPACTION_TRIGGER_CHARS
+    end
+
+    def build_compaction_summary(messages, trigger:)
+      text_snippets = []
+      tool_counts = Hash.new(0)
+      result_snippets = []
+
+      messages.each do |msg|
+        content = msg[:content] || msg['content']
+        role = msg[:role] || msg['role']
+
+        if content.is_a?(String)
+          normalized = content.gsub(/\s+/, ' ').strip
+          next if normalized.blank?
+
+          prefix = role.to_s == 'assistant' ? 'assistant' : 'user'
+          text_snippets << "#{prefix}: #{normalized[0, 160]}"
+        elsif content.is_a?(Array)
+          content.each do |block|
+            type = block[:type] || block['type']
+            if type == 'tool_use'
+              tool_counts[(block[:name] || block['name']).to_s] += 1
+            elsif type == 'tool_result'
+              snippet = (block[:content] || block['content']).to_s.gsub(/\s+/, ' ').strip
+              result_snippets << snippet[0, 160] unless snippet.blank?
+            end
+          end
+        end
+      end
+
+      lines = ["[Earlier conversation summary | trigger=#{trigger}]"]
+      if text_snippets.any?
+        lines << 'Earlier requests and findings:'
+        text_snippets.last(4).each { |snippet| lines << "- #{snippet}" }
+      end
+      if tool_counts.any?
+        tool_summary = tool_counts.map { |name, count| "#{name}x#{count}" }.join(', ')
+        lines << "Earlier tool activity: #{tool_summary}"
+      end
+      if result_snippets.any?
+        lines << "Earlier tool results: #{result_snippets.last(3).join(' | ')}"
+      end
+
+      plan_lines = pending_plan_titles
+      lines << "Pending plan steps: #{plan_lines.join(', ')}" if plan_lines.any?
+
+      workflow_context = @mutation_workflow&.prompt_context
+      lines << "Evidence ledger:\n#{workflow_context}" if workflow_context.present?
+
+      summary = lines.join("\n")
+      return summary if summary.length <= COMPACTION_SUMMARY_CHARS
+
+      "#{summary[0...COMPACTION_SUMMARY_CHARS]}\n...[compacted]"
+    end
+
+    def record_compaction_metrics(older_messages, compacted_messages, trigger)
+      removed_count = [older_messages.size - 1, 0].max
+      removed_chars = [older_messages.sum { |msg| message_chars(msg) } - message_chars(compacted_messages.first), 0].max
+      @metrics[:compaction_runs] += 1
+      @metrics[:compacted_messages] += removed_count
+      @metrics[:compacted_chars] += removed_chars
+      @metrics[:last_compaction_trigger] = trigger
+      ChatbotLogger.log_info(
+        session_id: conversation_id,
+        context: 'COMPACTION',
+        detail: "trigger=#{trigger} removed_messages=#{removed_count} saved_chars=#{removed_chars}"
+      )
+    end
+
     # ─── Layer 4: Dynamic tool selection ─────────────────────────
 
     def select_tools_for_query(user_message)
       msg_lower = user_message.to_s.downcase
       matched_tools = Set.new(BASE_TOOLS)
       matched_profiles = []
+      mutation_request = mutation_intent?(msg_lower)
+
+      @mutation_workflow.mark_intent(user_message, mutation: mutation_request)
+
+      if follow_up_restore_preferred?(user_message)
+        restored_tools = follow_up_tools_from_mutation_context
+        if restored_tools.any?
+          @selected_tool_names = restored_tools
+          @matched_profiles = [:restored_context]
+          @selection_confidence = 'restored'
+          @planner_active = true if plan_pending? || @mutation_workflow.pending?
+          @metrics[:restored_follow_up_success] = true if @session_restored
+          @metrics[:spreadsheet_workflow_used] = true if @mutation_workflow.active_workspace_file.present?
+          ChatbotLogger.log_info(session_id: conversation_id, context: "TOOL SELECT", detail: "restoring #{restored_tools.size} tools from mutation/evidence context before keyword selection")
+          return
+        end
+      end
 
       PROFILE_KEYWORDS.each do |profile, keywords|
         if keywords.any? { |kw| msg_lower.include?(kw) }
@@ -952,22 +1290,22 @@ module RedmineTxMcp
         end
       end
 
-      if mutation_intent?(msg_lower)
+      if mutation_request
         matched_profiles << :issue_management unless matched_profiles.include?(:issue_management)
         matched_tools.merge(TOOL_PROFILES[:issue_management])
       end
 
-      if mutation_intent?(msg_lower) && project_intent?(msg_lower)
+      if mutation_request && project_intent?(msg_lower)
         matched_profiles << :project_info unless matched_profiles.include?(:project_info)
         matched_tools.merge(TOOL_PROFILES[:project_info])
       end
 
-      if mutation_intent?(msg_lower) && user_intent?(msg_lower)
+      if mutation_request && user_intent?(msg_lower)
         matched_profiles << :user_info unless matched_profiles.include?(:user_info)
         matched_tools.merge(TOOL_PROFILES[:user_info])
       end
 
-      if mutation_intent?(msg_lower) && version_entity_intent?(msg_lower)
+      if mutation_request && version_entity_intent?(msg_lower)
         matched_profiles << :version_progress unless matched_profiles.include?(:version_progress)
         matched_tools.merge(TOOL_PROFILES[:version_progress])
       end
@@ -989,14 +1327,29 @@ module RedmineTxMcp
         matched_tools.merge(TOOL_PROFILES[:spreadsheet_work])
       end
 
+      @metrics[:spreadsheet_workflow_used] = true if matched_profiles.include?(:spreadsheet_work)
+
       @matched_profiles = matched_profiles
       @selection_confidence = selection_confidence_for(matched_profiles)
       @planner_active = should_activate_planner?(msg_lower, matched_profiles)
 
       unless matched_profiles.any?
+        if mutation_follow_up_candidate?(user_message)
+          restored_tools = follow_up_tools_from_mutation_context
+          if restored_tools.any?
+            @selected_tool_names = restored_tools
+            @matched_profiles = [:restored_context]
+            @selection_confidence = 'restored'
+            @planner_active = true if plan_pending? || @mutation_workflow.pending?
+            ChatbotLogger.log_info(session_id: conversation_id, context: "TOOL SELECT", detail: "no keyword match, restoring #{restored_tools.size} tools from mutation/evidence context")
+            return
+          end
+        end
+
         if plan_pending? && @selected_tool_names.present?
           @selection_confidence = 'restored'
           @planner_active = true
+          @metrics[:restored_follow_up_success] = true if @session_restored
           ChatbotLogger.log_info(session_id: conversation_id, context: "TOOL SELECT", detail: "no keyword match, reusing previous #{Array(@selected_tool_names).size} tools because plan is still pending")
           return
         end
@@ -1010,6 +1363,27 @@ module RedmineTxMcp
 
       @selected_tool_names = matched_tools.to_a
       ChatbotLogger.log_info(session_id: conversation_id, context: "TOOL SELECT", detail: "#{@selected_tool_names.size} tools: #{@selected_tool_names.join(', ')}")
+    end
+
+    def mutation_follow_up_candidate?(user_message)
+      @mutation_workflow.pending_verification? ||
+        RedmineTxMcp::ChatbotMutationWorkflow.follow_up_reference?(user_message)
+    end
+
+    def follow_up_restore_preferred?(user_message)
+      return false unless mutation_follow_up_candidate?(user_message)
+      return false unless @mutation_workflow.has_follow_up_context? || (plan_pending? && @selected_tool_names.present?)
+
+      message = user_message.to_s
+      no_new_targets = extract_issue_refs(message).empty? && extract_file_refs(message).empty?
+      no_new_targets && message.length <= 40
+    end
+
+    def follow_up_tools_from_mutation_context
+      tools = Set.new(BASE_TOOLS)
+      tools.merge(Array(@selected_tool_names)) if plan_pending? && @selected_tool_names.present?
+      tools.merge(@mutation_workflow.follow_up_tool_names)
+      tools.to_a
     end
 
     def build_execution_plan(user_message)
@@ -1137,10 +1511,10 @@ module RedmineTxMcp
         [
           "#{target}와 현재 상태를 확인합니다.",
           "#{change}에 필요한 상태, 담당자, 버전 같은 유효 값을 조회합니다.",
-          "issue_update로 #{change}를 적용한 뒤 결과를 다시 확인합니다."
+          "issue_update로 #{change}를 수정한 뒤 결과를 다시 확인합니다."
         ],
         [
-          "Identify #{target} and inspect its current state.",
+          "Identify the target issue (#{target}) and inspect its current state.",
           "Look up any valid status, assignee, or version values needed for #{change}.",
           "Apply #{change} with issue_update and verify the result."
         ]
@@ -1155,12 +1529,12 @@ module RedmineTxMcp
         [
           "#{scope} 기준으로 버그 범위를 먼저 확정합니다.",
           "bug_statistics와 issue_list로 위험 신호와 관련 이슈를 조회합니다.",
-          "#{scope}에서 핵심 문제와 후속 확인 포인트를 정리합니다."
+          "#{scope}에서 핵심 문제의 원인과 근거, 후속 확인 포인트를 정리합니다."
         ],
         [
           "Pin down the bug scope for #{scope} first.",
           "Use bug_statistics and issue_list to find risk signals and related issues.",
-          "Summarize the main problems and next checks for #{scope}."
+          "Summarize the main causes, supporting evidence, and next checks for #{scope}."
         ]
       )
     end
@@ -1249,7 +1623,10 @@ module RedmineTxMcp
       quoted = message.to_s[/["'“”‘’]([^"'“”‘’]{2,60})["'“”‘’]/, 1]
       return quoted.strip if quoted.present?
 
-      match = message.to_s.match(/([A-Za-z0-9가-힣._-]+(?:\s+[A-Za-z0-9가-힣._-]+){0,2})\s*(?:이슈|issue|버그|bug|일감)\b/i)
+      simple_match = message.to_s.match(/([A-Za-z0-9가-힣._-]{2,40})\s*(?:이슈|issue|버그|bug|일감)/i)
+      return simple_match[1].to_s.strip if simple_match && simple_match[1].present?
+
+      match = message.to_s.match(/([A-Za-z0-9가-힣._-]+(?:\s+[A-Za-z0-9가-힣._-]+){0,2})\s*(?:이슈|issue|버그|bug|일감)(?:\b|\s|$)/i)
       return nil unless match
 
       candidate = match[1].to_s.gsub(/\b(?:관련|현재|전체|모든|각|this|that|the)\b/i, '').strip
@@ -1288,7 +1665,7 @@ module RedmineTxMcp
       labels = []
 
       if (status_value = extract_status_value(text))
-        labels << (korean ? "상태를 #{status_value}(으)로" : "set the status to #{status_value}")
+        labels << (korean ? "상태를 #{status_value}(으)로 변경" : "set the status to #{status_value}")
       elsif downcased.match?(/상태|status|qa|done|close|closed|reopen|review|resolved|종결|완료|검수/)
         labels << (korean ? '상태 변경' : 'a status change')
       end
@@ -1324,7 +1701,10 @@ module RedmineTxMcp
 
       patterns.each do |pattern|
         match = message.to_s.match(pattern)
-        return match[1] if match && match[1].present?
+        next unless match && match[1].present?
+
+        value = match[1].to_s.sub(/\s*(?:로|으로)\z/, '')
+        return value if value.present?
       end
 
       nil
@@ -1484,13 +1864,13 @@ module RedmineTxMcp
 
     def mutation_intent?(message)
       msg = message.to_s.downcase
-      PROFILE_KEYWORDS[:issue_management].any? { |kw| msg.include?(kw) } ||
+      PROFILE_KEYWORDS[:issue_management].any? { |kw| intent_keyword_match?(msg, kw) } ||
         msg.match?(/(?:^|\s)#?\d+\s*(?:을|를)?\s*(?:qa|review|done|close|closed|reopen)/i)
     end
 
     def assignment_intent?(message)
       msg = message.to_s.downcase
-      %w[담당 할당 assign assignee owner].any? { |kw| msg.include?(kw) }
+      %w[담당 할당 assign assignee owner].any? { |kw| intent_keyword_match?(msg, kw) }
     end
 
     def schedule_or_version_intent?(message)
@@ -1563,13 +1943,161 @@ module RedmineTxMcp
       nil
     end
 
+    def workspace_event_payload
+      return nil unless @workspace_context.is_a?(Hash)
+
+      user_id = @workspace_context[:user_id] || @workspace_context['user_id']
+      project_id = @workspace_context[:project_id] || @workspace_context['project_id']
+      session_id = @workspace_context[:session_id] || @workspace_context['session_id']
+      return nil unless user_id.present? && project_id.present? && session_id.present?
+
+      workspace = RedmineTxMcp::ChatbotWorkspace.new(
+        user_id: user_id,
+        project_id: project_id,
+        session_id: session_id
+      )
+
+      {
+        uploads: workspace.list_uploads.map { |file| file[:stored_name] },
+        reports: workspace.list_reports.map { |file| file[:stored_name] },
+        active_file: @mutation_workflow.active_workspace_file,
+        active_sheet: @mutation_workflow.active_sheet_name
+      }
+    rescue => e
+      ChatbotLogger.log_error(session_id: conversation_id, context: 'workspace_event_payload', error_class: e.class, message: e.message, backtrace: e.backtrace)
+      nil
+    end
+
+    def emit_event(event_handler, payload)
+      return unless event_handler
+
+      event_type = (payload[:type] || payload['type']).to_s
+      if %w[phase verify workspace stop_reason].include?(event_type) && !feature_enabled?('streaming_status')
+        return
+      end
+
+      @metrics[:stream_events] += 1
+      ChatbotLogger.log_stream_event(
+        session_id: conversation_id,
+        event: event_type,
+        call_count: @metrics[:stream_events],
+        pid: Process.pid,
+        tid: Thread.current.object_id,
+        detail: event_payload_detail(payload)
+      )
+      event_handler.call(payload)
+    end
+
+    def event_payload_detail(payload)
+      details = payload.each_with_object([]) do |(key, value), memo|
+        next if key.to_s == 'type'
+
+        rendered = case value
+                   when Array, Hash
+                     JSON.generate(value)
+                   else
+                     value.to_s
+                   end
+        memo << "#{key}=#{rendered}" unless rendered.blank?
+      end
+      details.join(' | ')
+    rescue
+      nil
+    end
+
     def response_has_tool_use?(response)
       response['content']&.any? { |content| content['type'] == 'tool_use' }
     end
 
+    def chatbot_settings
+      Setting.plugin_redmine_tx_mcp || {}
+    rescue
+      {}
+    end
+
+    def feature_enabled?(feature_name)
+      configured_feature_flags.fetch(feature_name.to_s, true)
+    end
+
+    def configured_feature_flags
+      raw = chatbot_settings['chatbot_feature_flags']
+      flags = case raw
+              when Hash
+                raw.each_with_object({}) { |(key, value), memo| memo[key.to_s] = value == true || value.to_s == 'true' }
+              when String
+                raw.split(',').each_with_object({}) { |token, memo| memo[token.strip] = true if token.present? }
+              else
+                {}
+              end
+      DEFAULT_FEATURE_FLAGS.merge(flags)
+    end
+
+    def openai_endpoint_url
+      @endpoint_url.presence || chatbot_settings['openai_endpoint_url'].presence
+    end
+
+    def openai_api_key
+      return @api_key if @provider == 'openai'
+
+      chatbot_settings['openai_api_key'].presence
+    end
+
+    def anthropic_api_key
+      return @api_key if @provider == 'anthropic'
+
+      chatbot_settings['claude_api_key'].presence || ENV['ANTHROPIC_API_KEY']
+    end
+
+    def build_provider_http_error(provider, status_code, body)
+      message = body.to_s
+      ProviderRequestError.new(
+        "#{provider} API Error: #{status_code} - #{message}",
+        provider: provider,
+        http_status: status_code,
+        retryable: RETRYABLE_HTTP_STATUSES.include?(status_code),
+        context_overflow: context_overflow_message?(message)
+      )
+    end
+
+    def classify_openai_error(error)
+      return error if error.is_a?(ProviderRequestError)
+
+      message = error.message.to_s
+      status_code = message[/\b(\d{3})\b/, 1]&.to_i
+      ProviderRequestError.new(
+        message,
+        provider: 'openai',
+        http_status: status_code,
+        retryable: status_code ? RETRYABLE_HTTP_STATUSES.include?(status_code) : transport_error?(error),
+        context_overflow: context_overflow_message?(message)
+      )
+    end
+
+    def context_overflow_message?(message)
+      CONTEXT_OVERFLOW_PATTERNS.any? { |pattern| pattern.match?(message.to_s) }
+    end
+
+    def transport_error?(error)
+      error.is_a?(Timeout::Error) || error.is_a?(EOFError) || error.is_a?(IOError) ||
+        error.is_a?(SocketError) || error.is_a?(Errno::ECONNRESET) ||
+        error.is_a?(Errno::ECONNREFUSED) || error.is_a?(Errno::ETIMEDOUT)
+    end
+
+    def configured_max_run_seconds
+      configured = (chatbot_settings['max_run_seconds'].to_i rescue 0)
+      configured.positive? ? configured : DEFAULT_MAX_RUN_SECONDS
+    end
+
     def configured_max_tool_calls
-      configured = (Setting.plugin_redmine_tx_mcp['max_tool_call_depth'].to_i rescue 10)
+      configured = (chatbot_settings['max_tool_call_depth'].to_i rescue 10)
       configured.positive? ? configured : 10
+    end
+
+    def configured_max_iterations
+      configured = (chatbot_settings['max_loop_iterations'].to_i rescue 0)
+      return configured if configured.positive?
+
+      [max_tool_calls + MAX_GUARD_RETRIES + EXTRA_LOOP_ITERATIONS, MIN_LOOP_ITERATIONS].max
     end
 
     def prepare_tool_call_budget(user_message)
@@ -1593,24 +2121,193 @@ module RedmineTxMcp
       remaining_tool_calls <= 0
     end
 
-    def invoke_model(request_body, thinking_message: nil, event_handler: nil)
-      first_chunk_received = false
-      if event_handler
-        event_handler.call({ type: 'thinking', message: thinking_message }) if thinking_message.present?
-        call_claude_api(request_body) do |_event|
-          next if first_chunk_received
+    def build_run_guard
+      RedmineTxMcp::ChatbotRunGuard.new(
+        max_iterations: configured_max_iterations,
+        max_elapsed_seconds: configured_max_run_seconds,
+        abort_check: proc { abort_requested? }
+      )
+    end
 
-          first_chunk_received = true
-          event_handler.call({ type: 'thinking', message: 'Generating response...' })
+    def invoke_model(request_body, thinking_message: nil, event_handler: nil)
+      provider = @provider
+      request = prepare_request_body_for_model(request_body, trigger: 'pre_request')
+      first_chunk_received = false
+
+      emit_event(event_handler, { type: 'thinking', message: thinking_message }) if thinking_message.present?
+
+      compacted_on_overflow = false
+      attempted_fallback = false
+
+      loop do
+        begin
+          if event_handler
+            return call_claude_api(request, provider: provider) do |_event|
+              next if first_chunk_received
+
+              first_chunk_received = true
+              emit_event(event_handler, { type: 'thinking', message: 'Generating response...' })
+            end
+          end
+
+          return call_claude_api(request, provider: provider)
+        rescue ProviderRequestError => e
+          if e.context_overflow? && feature_enabled?('adaptive_compaction') && !compacted_on_overflow
+            compacted_on_overflow = true
+            @metrics[:context_overflow_retries] += 1
+            ChatbotLogger.log_info(session_id: conversation_id, context: 'PROVIDER RETRY', detail: "context overflow on #{provider}, compacting and retrying")
+            emit_event(event_handler, { type: 'phase', phase: 'context_compaction', provider: provider, reason: 'context_overflow' })
+            request = prepare_request_body_for_model(request_body, trigger: 'context_overflow', force_compaction: true)
+            first_chunk_received = false
+            next
+          end
+
+          fallback_provider = fallback_provider_for(provider)
+          if !attempted_fallback && fallback_provider && fallback_allowed_for?(e)
+            attempted_fallback = true
+            @metrics[:provider_fallbacks] += 1
+            @metrics[:last_fallback_provider] = fallback_provider
+            ChatbotLogger.log_info(
+              session_id: conversation_id,
+              context: 'PROVIDER FALLBACK',
+              detail: "#{provider} -> #{fallback_provider} (retryable=#{e.retryable?}, write_calls=#{@write_tool_calls}, pending_verify=#{@mutation_workflow.pending_verification?})"
+            )
+            emit_event(event_handler, { type: 'phase', phase: 'provider_fallback', from: provider, to: fallback_provider, reason: e.message })
+            provider = fallback_provider
+            first_chunk_received = false
+            next
+          end
+
+          raise
         end
-      else
-        call_claude_api(request_body)
       end
     end
 
+    def prepare_request_body_for_model(request_body, trigger:, force_compaction: false)
+      body = deep_dup(request_body)
+      messages_key = body.key?(:messages) ? :messages : 'messages'
+      body[messages_key] = prepare_messages_for_model(
+        Array(body[messages_key]),
+        trigger: trigger,
+        force_compaction: force_compaction
+      )
+      body
+    end
+
+    def fallback_provider_for(provider)
+      case provider.to_s
+      when 'anthropic'
+        openai_endpoint_url.present? ? 'openai' : nil
+      when 'openai'
+        anthropic_api_key.present? ? 'anthropic' : nil
+      end
+    end
+
+    def fallback_allowed_for?(error)
+      return false unless feature_enabled?('provider_fallback')
+      return false unless error.retryable?
+
+      @write_tool_calls.zero? || @mutation_workflow.pending_verification?
+    end
+
+    def stop_response_for(reason, event_handler: nil, detector: nil)
+      emit_event(event_handler, type: 'stop_reason', reason: reason, detector: detector)
+
+      return summarized_stop_response(event_handler: event_handler) if reason == 'tool_budget'
+
+      build_stop_response(reason, detector: detector)
+    rescue => e
+      ChatbotLogger.log_error(
+        session_id: conversation_id,
+        context: "stop_response_for(#{reason})",
+        error_class: e.class,
+        message: e.message,
+        backtrace: e.backtrace
+      )
+      build_stop_response(reason, detector: detector)
+    end
+
+    def summarized_stop_response(event_handler: nil)
+      summarize_without_tools(
+        instruction: '[시스템] 도구 호출 한도에 도달했습니다. 이미 수집한 결과만 사용해서 답변을 마무리하세요. 한도 때문에 중단되었다는 점과 현재까지 확인된 내용만 설명하세요.',
+        thinking_message: '도구 호출 한도에 도달해 현재까지 결과를 정리 중입니다...',
+        event_handler: event_handler
+      )
+    rescue => e
+      ChatbotLogger.log_error(
+        session_id: conversation_id,
+        context: 'summarized_stop_response',
+        error_class: e.class,
+        message: e.message,
+        backtrace: e.backtrace
+      )
+      build_stop_response('tool_budget')
+    end
+
+    def build_stop_response(reason, detector: nil)
+      {
+        'content' => [
+          {
+            'type' => 'text',
+            'text' => stop_response_text(reason, detector: detector)
+          }
+        ],
+        'stop_reason' => 'end_turn'
+      }
+    end
+
+    def stop_response_text(reason, detector: nil)
+      headline = case reason.to_s
+      when 'abort'
+        '요청에 따라 현재 작업을 중단했습니다.'
+      when 'timeout'
+        '처리 시간이 제한을 넘어 현재 작업을 중단했습니다.'
+      when 'hard_cap'
+        '반복 횟수 제한에 도달해 현재 작업을 중단했습니다.'
+      when 'tool_budget'
+        '도구 호출 한도에 도달해 현재까지 결과만으로 마무리했습니다.'
+      else
+        '현재 작업을 중단했습니다.'
+      end
+
+      lines = [headline]
+      lines << "중단 원인 패턴: #{detector}" if detector.present?
+      lines << "도구 호출: #{@real_tool_calls}/#{max_tool_calls}" if max_tool_calls.positive?
+      lines << "쓰기 호출: #{@write_tool_calls}, 성공한 쓰기: #{@successful_write_tool_calls}" if @write_tool_calls.positive?
+      if plan_pending?
+        lines << "남은 계획 단계: #{pending_plan_titles.join(', ')}"
+      end
+      lines << '필요하면 현재 상태를 기준으로 이어서 요청해 주세요.'
+      lines.join("\n")
+    end
+
+    def register_stop_reason(reason, iteration_count: nil, elapsed_ms: nil, detector: nil)
+      @run_stop_reason = reason
+      @run_iteration_count = iteration_count unless iteration_count.nil?
+      @run_elapsed_ms = elapsed_ms unless elapsed_ms.nil?
+      @run_loop_detector = detector if detector.present?
+    end
+
+    def elapsed_since(start_time)
+      ((Process.clock_gettime(Process::CLOCK_MONOTONIC) - start_time) * 1000).round
+    end
+
+    def abort_cache_key
+      "#{ABORT_CACHE_KEY_PREFIX}:#{conversation_id}"
+    end
+
+    def abort_requested?
+      Rails.cache.read(abort_cache_key) == true
+    end
+
+    def clear_abort_request
+      Rails.cache.delete(abort_cache_key)
+    end
+
     def build_clean_messages(extra_messages = [])
-      clean_conversation_history(
-        budget_conversation_history(@conversation_history + extra_messages)
+      prepare_messages_for_model(
+        @conversation_history + extra_messages,
+        trigger: extra_messages.any? ? 'extended_context' : 'history'
       )
     end
 
@@ -1723,14 +2420,11 @@ module RedmineTxMcp
     end
 
     def read_only_tool?(tool_name)
-      READ_ONLY_TOOL_PATTERNS.any? { |pattern| pattern.match?(tool_name.to_s) }
+      RedmineTxMcp::ChatbotMutationWorkflow.read_only_tool?(tool_name)
     end
 
     def side_effecting_tool?(tool_name)
-      tool = tool_name.to_s
-      return true if tool == 'spreadsheet_export_report'
-
-      !read_only_tool?(tool) && tool.match?(/(?:create|update|delete|add_member|remove_member)\z/)
+      RedmineTxMcp::ChatbotMutationWorkflow.side_effecting_tool?(tool_name)
     end
 
     def repeat_limit_for_tool(tool_name)
@@ -1744,6 +2438,33 @@ module RedmineTxMcp
       "쓰기 도구 #{tool_name} 실행을 보류했습니다. #{reason}"
     end
 
+    def emit_verification_transition_event(event_handler, tool_name, before_state)
+      after_pending = @mutation_workflow.pending_verification?
+      after_failed = @mutation_workflow.verification_failed?
+
+      if side_effecting_tool?(tool_name) && after_pending && !before_state[:pending]
+        emit_event(
+          event_handler,
+          type: 'verify',
+          status: 'pending',
+          tool: tool_name,
+          verify_with: @mutation_workflow.verify_with_tools
+        )
+        return
+      end
+
+      if !after_pending && before_state[:pending] && !after_failed
+        @metrics[:mutation_verify_successes] += 1
+        emit_event(event_handler, type: 'verify', status: 'passed', tool: tool_name)
+        return
+      end
+
+      if after_failed && !before_state[:failed]
+        @metrics[:mutation_verify_failures] += 1
+        emit_event(event_handler, type: 'verify', status: 'failed', tool: tool_name)
+      end
+    end
+
     def tool_call_signature(tool_name, tool_input)
       normalized = tool_input.is_a?(Hash) ? tool_input.transform_keys(&:to_s) : {}
       [tool_name.to_s, JSON.generate(normalized.sort.to_h)]
@@ -1755,6 +2476,7 @@ module RedmineTxMcp
       signature = tool_call_signature(tool_name, tool_input)
       history = @tool_call_history[signature]
       return history[:successes] >= 1 if side_effecting_tool?(tool_name)
+      return false if read_only_tool?(tool_name)
 
       history[:attempts] >= repeat_limit_for_tool(tool_name)
     end
@@ -1775,6 +2497,12 @@ module RedmineTxMcp
 
     def encoded_tool_content(result)
       result.is_a?(String) ? result : RedmineTxMcp::LlmFormatEncoder.encode(result)
+    end
+
+    def append_loop_warning_note(content, note)
+      return content if note.blank?
+
+      "#{content}\n\n#{note}"
     end
 
     def capability_refusal_response?(text)
@@ -1807,6 +2535,30 @@ module RedmineTxMcp
         return {
           instruction: "[시스템] 아직 완료되지 않은 계획 단계가 있습니다: #{pending_plan_titles.join(', ')}. 남은 단계를 계속 진행하거나 불가능하면 skipped로 표시하세요.",
           status: '남은 계획 단계를 계속 확인 중입니다...'
+        }
+      end
+
+      if @mutation_workflow.pending_verification? && @guard_retry_counts[:verification_pending] < MAX_GUARD_RETRIES
+        @guard_retry_counts[:verification_pending] += 1
+        return {
+          instruction: "[시스템] #{@mutation_workflow.verification_pending_message} 완료로 답하기 전에 해당 조회 도구를 호출해 검증하세요.",
+          status: '변경 결과를 read-back 검증 중입니다...',
+          force_all_tools: true,
+          tool_choice: { type: 'any' },
+          include_internal_tools: false
+        }
+      end
+
+      if @mutation_workflow.verification_failed? &&
+         completion_claim_without_tool?(assistant_message) &&
+         @guard_retry_counts[:verification_failed] < 1
+        @guard_retry_counts[:verification_failed] += 1
+        return {
+          instruction: '[시스템] 최근 read-back 검증이 요청한 변경과 일치하지 않았습니다. 성공으로 보고하지 말고, 불일치 내용을 설명하거나 필요한 조회/수정을 다시 수행하세요.',
+          status: '검증 불일치 내용을 다시 확인 중입니다...',
+          force_all_tools: true,
+          tool_choice: { type: 'any' },
+          include_internal_tools: false
         }
       end
 
@@ -1884,7 +2636,8 @@ module RedmineTxMcp
         'selected_tool_names' => deep_dup(Array(@selected_tool_names)),
         'matched_profiles' => deep_dup(Array(@matched_profiles).map(&:to_s)),
         'selection_confidence' => @selection_confidence.to_s,
-        'plan_state' => deep_dup(@plan_state)
+        'plan_state' => deep_dup(@plan_state),
+        'mutation_workflow_state' => @mutation_workflow.export_state
       }
     end
 
@@ -1895,6 +2648,7 @@ module RedmineTxMcp
       matched_profiles = agent_state['matched_profiles'] || agent_state[:matched_profiles]
       selection_confidence = agent_state['selection_confidence'] || agent_state[:selection_confidence]
       plan_state = agent_state['plan_state'] || agent_state[:plan_state]
+      mutation_workflow_state = agent_state['mutation_workflow_state'] || agent_state[:mutation_workflow_state]
 
       @selected_tool_names = normalize_tool_name_list(selected_tool_names)
       @matched_profiles = Array(matched_profiles).filter_map do |profile|
@@ -1903,6 +2657,7 @@ module RedmineTxMcp
       end
       @selection_confidence = selection_confidence.to_s.presence || 'none'
       @plan_state = plan_state.present? ? normalize_plan_state(plan_state) : nil
+      @mutation_workflow = RedmineTxMcp::ChatbotMutationWorkflow.new(mutation_workflow_state)
     end
 
     def normalize_tool_name_list(tool_names)
@@ -1974,6 +2729,13 @@ module RedmineTxMcp
       end
 
       validated
+    end
+
+    def intent_keyword_match?(message, keyword)
+      return false if keyword == '배정' && message.include?('미배정')
+      return false if keyword == 'assign' && message.include?('unassigned')
+
+      message.include?(keyword)
     end
   end
 end
