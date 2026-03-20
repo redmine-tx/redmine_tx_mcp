@@ -91,7 +91,8 @@ module RedmineTxMcp
                   parent_issue_id: { type: "integer", description: "Parent issue ID" },
                   start_date: { type: "string", description: "Start date (YYYY-MM-DD)" },
                   due_date: { type: "string", description: "Due date (YYYY-MM-DD)" },
-                  estimated_hours: { type: "number", description: "Estimated hours" }
+                  estimated_hours: { type: "number", description: "Estimated hours" },
+                  custom_fields: { type: "array", items: { type: "object", properties: { id: { type: "integer" }, value: {} }, required: ["id", "value"] }, description: "Custom field values. Each item: {id: custom_field_id, value: string_or_array}. Use enum_custom_fields to find valid IDs." }
                 },
                 required: ["project_id", "tracker_id", "subject"]
               }
@@ -115,7 +116,8 @@ module RedmineTxMcp
                   due_date: { type: ["string", "null"], description: "Due date (YYYY-MM-DD). Set null to clear." },
                   estimated_hours: { type: ["number", "null"], description: "Estimated hours. Set null to clear." },
                   done_ratio: { type: "integer", description: "Done ratio (0-100)" },
-                  notes: { type: "string", description: "Comment to add to the issue" }
+                  notes: { type: "string", description: "Comment to add to the issue" },
+                  custom_fields: { type: "array", items: { type: "object", properties: { id: { type: "integer" }, value: {} }, required: ["id", "value"] }, description: "Custom field values. Each item: {id: custom_field_id, value: string_or_array}. Use enum_custom_fields to find valid IDs." }
                 },
                 required: ["id"]
               }
@@ -144,6 +146,7 @@ module RedmineTxMcp
                   estimated_hours: { type: ["number", "null"], description: "Estimated hours. Set null to clear." },
                   done_ratio: { type: "integer", description: "Done ratio (0-100)" },
                   notes: { type: "string", description: "Comment to add to every updated issue" },
+                  custom_fields: { type: "array", items: { type: "object", properties: { id: { type: "integer" }, value: {} }, required: ["id", "value"] }, description: "Custom field values. Each item: {id: custom_field_id, value: string_or_array}. Use enum_custom_fields to find valid IDs." },
                   allow_partial_success: {
                     type: "boolean",
                     description: "If true, update what can be updated and report per-issue failures. Default: false"
@@ -1249,6 +1252,13 @@ module RedmineTxMcp
           attrs['due_date'] = nullable_date_value(args, 'due_date') if args.key?('due_date')
           attrs['estimated_hours'] = nullable_number_value(args, 'estimated_hours') if args.key?('estimated_hours')
           attrs['done_ratio'] = args['done_ratio'] if args.key?('done_ratio') && !args['done_ratio'].nil?
+          if args.key?('custom_fields') && args['custom_fields'].is_a?(Array)
+            cf_hash = {}
+            args['custom_fields'].each do |cf|
+              cf_hash[cf['id'].to_s] = cf['value'] if cf['id']
+            end
+            attrs['custom_field_values'] = cf_hash
+          end
           attrs
         end
 
@@ -1281,7 +1291,7 @@ module RedmineTxMcp
           %w[
             subject description status_id priority_id assigned_to_id category_id
             fixed_version_id parent_issue_id start_date due_date estimated_hours
-            done_ratio notes
+            done_ratio notes custom_fields
           ].any? { |key| args.key?(key) }
         end
 
@@ -1661,6 +1671,7 @@ module RedmineTxMcp
               spent_hours: issue.spent_hours,
               done_ratio: issue.done_ratio,
               worker: issue.respond_to?(:worker) && issue.worker ? issue.worker.name : nil,
+              custom_fields: format_custom_field_values(issue),
               created_on: issue.created_on&.iso8601,
               updated_on: issue.updated_on&.iso8601,
               closed_on: issue.closed_on&.iso8601
@@ -1728,6 +1739,7 @@ module RedmineTxMcp
               id: issue.worker.id,
               name: issue.worker.name
             } : nil,
+            custom_fields: format_custom_field_values(issue),
             begin_time: issue.respond_to?(:begin_time) ? issue.begin_time&.iso8601 : nil,
             end_time: issue.respond_to?(:end_time) ? issue.end_time&.iso8601 : nil,
             confirm_time: issue.respond_to?(:confirm_time) ? issue.confirm_time&.iso8601 : nil,
@@ -1735,6 +1747,16 @@ module RedmineTxMcp
             updated_on: issue.updated_on&.iso8601,
             closed_on: issue.closed_on&.iso8601
           }.merge(issue_tip_fields(issue))
+        end
+
+        def format_custom_field_values(object)
+          object.custom_field_values.map do |cfv|
+            {
+              id: cfv.custom_field.id,
+              name: cfv.custom_field.name,
+              value: cfv.value
+            }
+          end
         end
       end
     end

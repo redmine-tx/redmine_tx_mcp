@@ -63,26 +63,26 @@ module RedmineTxMcp
         spreadsheet_list_uploads spreadsheet_list_sheets spreadsheet_preview_sheet
         spreadsheet_extract_rows spreadsheet_export_report
         issue_list issue_get issue_update insert_bulk_update issue_relation_create issue_relation_delete
-        enum_statuses enum_trackers enum_priorities enum_categories
+        enum_statuses enum_trackers enum_priorities enum_categories enum_custom_fields
         user_list user_get version_list version_get
       ],
       bug_analysis: %w[bug_statistics issue_list issue_get version_list version_get],
       issue_management: %w[
         issue_get issue_relations_get issue_create issue_update insert_bulk_update
         issue_relation_create issue_relation_delete
-        enum_statuses enum_trackers enum_priorities enum_categories
+        enum_statuses enum_trackers enum_priorities enum_categories enum_custom_fields
         version_list version_get
         user_list user_get
       ],
       project_info: %w[
         project_list project_get project_create project_update project_delete
         project_members project_add_member project_remove_member
-        user_list user_get enum_roles
+        user_list user_get enum_roles enum_custom_fields
       ],
       user_info: %w[
         user_list user_get user_create user_update user_delete
         user_projects user_groups user_roles
-        project_list project_get
+        project_list project_get enum_custom_fields
       ],
     }.freeze
 
@@ -96,7 +96,8 @@ module RedmineTxMcp
                           추가 세팅 설정 지정 재배정 재할당 배정 코멘트 댓글 메모 노트
                           종료 종결 완료 재오픈 reopen close comment assign assignee due
                           링크 연결 해제 unlink
-                          priority 우선순위 일정 기한 마감 qa 검수],
+                          priority 우선순위 일정 기한 마감 qa 검수
+                          커스텀필드 커스텀 사용자정의 custom_field custom],
       project_info: %w[프로젝트 project],
       user_info: %w[사용자 user 담당자 멤버 member 누구],
     }.freeze
@@ -111,7 +112,7 @@ module RedmineTxMcp
     BASE_TOOLS = %w[
       issue_list issue_get issue_relations_get issue_create issue_update insert_bulk_update issue_relation_create issue_relation_delete issue_children_summary
       version_list version_get version_overview bug_statistics
-      enum_statuses enum_trackers enum_priorities enum_categories
+      enum_statuses enum_trackers enum_priorities enum_categories enum_custom_fields
       user_list user_get
       run_script
     ].freeze

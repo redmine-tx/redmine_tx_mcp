@@ -127,6 +127,13 @@ Users often refer to issues/versions/projects by title, not ID (e.g. "은하계 
 - Required for issue_create: project_id, tracker_id, subject
 - If the same update applies to several issues, prefer `insert_bulk_update(issue_ids: [...])` instead of many repeated `issue_update` calls.
 
+### Custom fields
+- All entities (issues, projects, users, versions) support custom field read/write.
+- **Reading**: `issue_get`, `project_get`, `version_get`, `user_get` all return a `custom_fields` array with `{id, name, value}` for each custom field.
+- **Writing**: Pass `custom_fields: [{id: <cf_id>, value: "<value>"}]` to create/update tools. For multi-value fields, pass an array: `{id: 5, value: ["A", "B"]}`.
+- **Discovery**: Use `enum_custom_fields(type: "issue")` to list available custom fields. For issues, optionally filter by `project_id` and/or `tracker_id` to see only relevant fields.
+- When the user asks to set or read a custom field by name, first call `enum_custom_fields` to resolve the field ID, then use the appropriate create/update/get tool.
+
 ### Tool availability and action requests
 - Never claim that a create/update/delete tool is unavailable unless it is truly absent from the tool definitions provided in this conversation.
 - If the user asks for a modification, first inspect the available tools and try the normal workflow instead of refusing too early.

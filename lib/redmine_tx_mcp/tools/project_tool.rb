@@ -45,7 +45,8 @@ module RedmineTxMcp
                   parent_id: { type: "integer", description: "Parent project ID" },
                   inherit_members: { type: "boolean", description: "Inherit members from parent", default: false },
                   tracker_ids: { type: "array", items: { type: "integer" }, description: "Tracker IDs to enable" },
-                  enabled_module_names: { type: "array", items: { type: "string" }, description: "Module names to enable" }
+                  enabled_module_names: { type: "array", items: { type: "string" }, description: "Module names to enable" },
+                  custom_fields: { type: "array", items: { type: "object", properties: { id: { type: "integer" }, value: {} }, required: ["id", "value"] }, description: "Custom field values. Each item: {id: custom_field_id, value: string_or_array}. Use enum_custom_fields to find valid IDs." }
                 },
                 required: ["name", "identifier"]
               }
@@ -66,7 +67,8 @@ module RedmineTxMcp
                   inherit_members: { type: "boolean", description: "Inherit members from parent" },
                   status: { type: "integer", description: "Project status (1=active, 2=closed, 9=archived)" },
                   tracker_ids: { type: "array", items: { type: "integer" }, description: "Tracker IDs to enable" },
-                  enabled_module_names: { type: "array", items: { type: "string" }, description: "Module names to enable" }
+                  enabled_module_names: { type: "array", items: { type: "string" }, description: "Module names to enable" },
+                  custom_fields: { type: "array", items: { type: "object", properties: { id: { type: "integer" }, value: {} }, required: ["id", "value"] }, description: "Custom field values. Each item: {id: custom_field_id, value: string_or_array}. Use enum_custom_fields to find valid IDs." }
                 },
                 required: ["id"]
               }
@@ -281,6 +283,9 @@ module RedmineTxMcp
             updated_on: project.updated_on&.iso8601,
             trackers: project.trackers.map { |t| { id: t.id, name: t.name } },
             enabled_modules: project.enabled_modules.map(&:name),
+            custom_fields: project.custom_field_values.map { |cfv|
+              { id: cfv.custom_field.id, name: cfv.custom_field.name, value: cfv.value }
+            },
             members_count: project.members.count,
             issues_count: project.issues.count
           }
@@ -293,6 +298,13 @@ module RedmineTxMcp
           end
           %w[is_public parent_id inherit_members tracker_ids enabled_module_names].each do |key|
             attrs[key] = args[key] if args.key?(key)
+          end
+          if args.key?('custom_fields') && args['custom_fields'].is_a?(Array)
+            cf_hash = {}
+            args['custom_fields'].each do |cf|
+              cf_hash[cf['id'].to_s] = cf['value'] if cf['id']
+            end
+            attrs['custom_field_values'] = cf_hash
           end
           attrs
         end

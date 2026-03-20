@@ -46,6 +46,19 @@ module RedmineTxMcp
                 type: "object",
                 properties: {}
               }
+            },
+            {
+              name: "enum_custom_fields",
+              description: "List custom fields available for a given entity type. Returns field ID, name, type, possible values, and whether it is required. Use this to discover valid custom field IDs before reading or setting custom field values on issues, projects, users, or versions.",
+              inputSchema: {
+                type: "object",
+                properties: {
+                  type: { type: "string", description: "Entity type", enum: ["issue", "project", "user", "version"] },
+                  project_id: { type: "integer", description: "Project ID (only for issue type - filters to custom fields enabled in this project)" },
+                  tracker_id: { type: "integer", description: "Tracker ID (only for issue type - filters to custom fields enabled for this tracker)" }
+                },
+                required: ["type"]
+              }
             }
           ]
         end
@@ -62,6 +75,8 @@ module RedmineTxMcp
             list_categories(arguments)
           when "enum_roles"
             list_roles
+          when "enum_custom_fields"
+            list_custom_fields(arguments)
           else
             { error: "Unknown tool: #{tool_name}" }
           end
@@ -147,6 +162,57 @@ module RedmineTxMcp
             }
           end
           { roles: roles }
+        end
+
+        def list_custom_fields(args)
+          cf_class = case args['type']
+                     when 'issue'   then IssueCustomField
+                     when 'project' then ProjectCustomField
+                     when 'user'    then UserCustomField
+                     when 'version' then VersionCustomField
+                     else
+                       return { error: "Unknown type: #{args['type']}. Supported: issue, project, user, version" }
+                     end
+
+          scope = cf_class.sorted
+
+          if args['type'] == 'issue'
+            if args['tracker_id']
+              tracker = Tracker.find_by(id: args['tracker_id'])
+              scope = scope.where(id: tracker.custom_field_ids) if tracker
+            end
+            if args['project_id']
+              project = Project.find_by(id: args['project_id'])
+              if project
+                project_cf_ids = project.issue_custom_field_ids
+                global_cf_ids = cf_class.where(is_for_all: true).pluck(:id)
+                scope = scope.where(id: (project_cf_ids + global_cf_ids).uniq)
+              end
+            end
+          end
+
+          fields = scope.map do |cf|
+            result = {
+              id: cf.id,
+              name: cf.name,
+              field_format: cf.field_format,
+              is_required: cf.is_required?,
+              is_filter: cf.is_filter?,
+              searchable: cf.searchable?,
+              multiple: cf.multiple?,
+              default_value: cf.default_value.presence,
+              description: cf.description.presence
+            }
+            if cf.possible_values.present?
+              result[:possible_values] = cf.possible_values
+            end
+            if cf.field_format == 'list' || cf.field_format == 'enumeration'
+              result[:possible_values] = cf.possible_values
+            end
+            result
+          end
+
+          { custom_fields: fields }
         end
       end
     end

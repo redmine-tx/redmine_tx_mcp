@@ -44,7 +44,8 @@ module RedmineTxMcp
                   status: { type: "string", description: "Version status", enum: ["open", "locked", "closed"], default: "open" },
                   sharing: { type: "string", description: "Sharing scope", enum: ["none", "descendants", "hierarchy", "tree", "system"], default: "none" },
                   due_date: { type: "string", description: "Due date (YYYY-MM-DD)" },
-                  wiki_page_title: { type: "string", description: "Associated wiki page title" }
+                  wiki_page_title: { type: "string", description: "Associated wiki page title" },
+                  custom_fields: { type: "array", items: { type: "object", properties: { id: { type: "integer" }, value: {} }, required: ["id", "value"] }, description: "Custom field values. Each item: {id: custom_field_id, value: string_or_array}. Use enum_custom_fields to find valid IDs." }
                 },
                 required: ["project_id", "name"]
               }
@@ -61,7 +62,8 @@ module RedmineTxMcp
                   status: { type: "string", description: "Version status", enum: ["open", "locked", "closed"] },
                   sharing: { type: "string", description: "Sharing scope", enum: ["none", "descendants", "hierarchy", "tree", "system"] },
                   due_date: { type: "string", description: "Due date (YYYY-MM-DD)" },
-                  wiki_page_title: { type: "string", description: "Associated wiki page title" }
+                  wiki_page_title: { type: "string", description: "Associated wiki page title" },
+                  custom_fields: { type: "array", items: { type: "object", properties: { id: { type: "integer" }, value: {} }, required: ["id", "value"] }, description: "Custom field values. Each item: {id: custom_field_id, value: string_or_array}. Use enum_custom_fields to find valid IDs." }
                 },
                 required: ["id"]
               }
@@ -243,7 +245,10 @@ module RedmineTxMcp
             due_date: version.effective_date&.iso8601,
             created_on: version.created_on&.iso8601,
             updated_on: version.updated_on&.iso8601,
-            wiki_page_title: version.wiki_page_title
+            wiki_page_title: version.wiki_page_title,
+            custom_fields: version.custom_field_values.map { |cfv|
+              { id: cfv.custom_field.id, name: cfv.custom_field.name, value: cfv.value }
+            }
           }
 
           if detailed
@@ -267,6 +272,13 @@ module RedmineTxMcp
           attrs['sharing'] = args['sharing'] || default_sharing if args.key?('sharing') || default_sharing
           attrs['due_date'] = args['due_date'] if args.key?('due_date')
           attrs['wiki_page_title'] = args['wiki_page_title'] if args.key?('wiki_page_title')
+          if args.key?('custom_fields') && args['custom_fields'].is_a?(Array)
+            cf_hash = {}
+            args['custom_fields'].each do |cf|
+              cf_hash[cf['id'].to_s] = cf['value'] if cf['id']
+            end
+            attrs['custom_field_values'] = cf_hash
+          end
           attrs
         end
       end

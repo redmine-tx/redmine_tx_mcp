@@ -46,7 +46,8 @@ module RedmineTxMcp
                   admin: { type: "boolean", description: "Is administrator", default: false },
                   status: { type: "integer", description: "User status (1=active, 2=registered, 3=locked)", default: 1 },
                   auth_source_id: { type: "integer", description: "Authentication source ID" },
-                  must_change_passwd: { type: "boolean", description: "Must change password on next login", default: false }
+                  must_change_passwd: { type: "boolean", description: "Must change password on next login", default: false },
+                  custom_fields: { type: "array", items: { type: "object", properties: { id: { type: "integer" }, value: {} }, required: ["id", "value"] }, description: "Custom field values. Each item: {id: custom_field_id, value: string_or_array}. Use enum_custom_fields to find valid IDs." }
                 },
                 required: ["login", "firstname", "lastname", "mail"]
               }
@@ -67,7 +68,8 @@ module RedmineTxMcp
                   admin: { type: "boolean", description: "Is administrator" },
                   status: { type: "integer", description: "User status (1=active, 2=registered, 3=locked)" },
                   auth_source_id: { type: "integer", description: "Authentication source ID" },
-                  must_change_passwd: { type: "boolean", description: "Must change password on next login" }
+                  must_change_passwd: { type: "boolean", description: "Must change password on next login" },
+                  custom_fields: { type: "array", items: { type: "object", properties: { id: { type: "integer" }, value: {} }, required: ["id", "value"] }, description: "Custom field values. Each item: {id: custom_field_id, value: string_or_array}. Use enum_custom_fields to find valid IDs." }
                 },
                 required: ["id"]
               }
@@ -197,6 +199,11 @@ module RedmineTxMcp
           user.status = args['status'] || User::STATUS_ACTIVE
           user.auth_source_id = args['auth_source_id'] if args['auth_source_id']
           user.must_change_passwd = args['must_change_passwd'] || false
+          if args.key?('custom_fields') && args['custom_fields'].is_a?(Array)
+            cf_hash = {}
+            args['custom_fields'].each { |cf| cf_hash[cf['id'].to_s] = cf['value'] if cf['id'] }
+            user.custom_field_values = cf_hash
+          end
 
           if user.save
             format_user_details(user)
@@ -220,6 +227,11 @@ module RedmineTxMcp
           user.status = args['status'] if args['status']
           user.auth_source_id = args['auth_source_id'] if args['auth_source_id']
           user.must_change_passwd = args['must_change_passwd'] unless args['must_change_passwd'].nil?
+          if args.key?('custom_fields') && args['custom_fields'].is_a?(Array)
+            cf_hash = {}
+            args['custom_fields'].each { |cf| cf_hash[cf['id'].to_s] = cf['value'] if cf['id'] }
+            user.custom_field_values = cf_hash
+          end
 
           if user.save
             format_user_details(user)
