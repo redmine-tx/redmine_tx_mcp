@@ -51,6 +51,13 @@ class McpHttpController < ApplicationController
     configured_key = settings['api_key']
     return render_auth_error("Invalid API key") unless configured_key.present? && api_key == configured_key
 
+    # tools/list, initialize 등 메타데이터 요청은 서버 Bearer 토큰만으로 허용
+    # (사용자 API key 불필요 — DB 접근 없는 순수 스키마 조회)
+    if metadata_only_request?
+      @mcp_user = User.anonymous
+      return true
+    end
+
     @mcp_user = find_authenticated_mcp_user
     return render_auth_error("Missing Redmine API key") unless api_key_from_request.present?
     return render_auth_error("Invalid Redmine API key") unless @mcp_user
@@ -109,5 +116,13 @@ class McpHttpController < ApplicationController
 
   def external_mcp_token_request?
     request.headers['Authorization'].to_s.match?(/\ABearer\s+/)
+  end
+
+  def metadata_only_request?
+    body = request.raw_post.to_s
+    return false if body.blank?
+    parsed = JSON.parse(body) rescue nil
+    return false unless parsed.is_a?(Hash)
+    %w[initialize tools/list resources/list].include?(parsed['method'])
   end
 end
