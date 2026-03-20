@@ -736,6 +736,7 @@ class ClaudeChatbotTest < ActiveSupport::TestCase
     assert_match(/Recent issue IDs: #123/, first_message)
     assert_match(/report\.xlsx/, first_message)
     assert_operator prepared.size, :<, original_size
+    assert_equal original_size, chatbot.instance_variable_get(:@conversation_history).size
   end
 
   test "invoke_model compacts and retries after context overflow" do
@@ -837,6 +838,48 @@ class ClaudeChatbotTest < ActiveSupport::TestCase
     assert_match(/503/, error.message)
     assert_equal ['anthropic'], attempts
     assert_equal 0, chatbot.instance_variable_get(:@metrics)[:provider_fallbacks]
+  end
+
+  test "invoke_model falls back after a successful write when provider fails during follow-up reasoning" do
+    chatbot = RedmineTxMcp::ClaudeChatbot.new(
+      api_key: 'anthropic-test-key',
+      provider: 'anthropic',
+      endpoint_url: 'http://example.test/v1/chat/completions',
+      model: 'test-model'
+    )
+    chatbot.instance_variable_set(:@write_tool_calls, 1)
+    chatbot.instance_variable_set(:@successful_write_tool_calls, 1)
+
+    request_body = chatbot.send(:build_request_body, messages: [{ role: 'user', content: '상태 알려줘' }])
+    attempts = []
+
+    chatbot.stub(:call_claude_api, lambda { |_body, provider: chatbot.instance_variable_get(:@provider), &block|
+      attempts << provider
+      if provider == 'anthropic'
+        raise RedmineTxMcp::ClaudeChatbot::ProviderRequestError.new(
+          'Anthropic API Error: 503',
+          provider: provider,
+          retryable: true,
+          http_status: 503
+        )
+      end
+
+      { 'content' => [{ 'type' => 'text', 'text' => 'fallback after write ok' }], 'usage' => {} }
+    }) do
+      result = chatbot.send(:invoke_model, request_body)
+      assert_equal 'fallback after write ok', chatbot.send(:extract_text_content, result)
+    end
+
+    assert_equal %w[anthropic openai], attempts
+    assert_equal 1, chatbot.instance_variable_get(:@metrics)[:provider_fallbacks]
+  end
+
+  test "mutation workflow numeric comparison rejects nil for zero" do
+    workflow = RedmineTxMcp::ChatbotMutationWorkflow.new
+
+    assert_equal false, workflow.send(:comparable_values?, 0, nil)
+    assert_equal false, workflow.send(:comparable_values?, 0, '')
+    assert_equal true, workflow.send(:comparable_values?, 0, '0')
   end
 
   test "handle_tool_calls emits phase and verify events for mutation workflow" do

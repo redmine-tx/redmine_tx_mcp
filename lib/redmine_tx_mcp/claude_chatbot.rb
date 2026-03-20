@@ -218,7 +218,7 @@ module RedmineTxMcp
 
         # Create system message with MCP tools information
         # Layer 3: Budget-managed conversation history
-        clean_messages = prepare_messages_for_model(@conversation_history, trigger: 'turn_start')
+        clean_messages = prepare_current_history_for_model(trigger: 'turn_start')
 
         response = invoke_model(build_request_body(messages: clean_messages))
         response = resolve_response(response, user_message)
@@ -282,7 +282,7 @@ module RedmineTxMcp
         prepare_tool_call_budget(user_message)
         execution_plan = build_execution_plan(user_message)
 
-        clean_messages = prepare_messages_for_model(@conversation_history, trigger: 'turn_start')
+        clean_messages = prepare_current_history_for_model(trigger: 'turn_start')
 
         request_body = build_request_body(messages: clean_messages)
 
@@ -830,11 +830,9 @@ module RedmineTxMcp
           tool_results << {
             type: 'tool_result',
             tool_use_id: content['id'],
-            content: append_loop_warning_note(
-              append_loop_warning_note(
-                encoded_tool_content(result),
-                workflow_note
-              ),
+            content: append_loop_warning_notes(
+              encoded_tool_content(result),
+              workflow_note,
               RedmineTxMcp::ChatbotLoopGuard.format_warning_note(loop_decision)
             )
           }
@@ -852,7 +850,7 @@ module RedmineTxMcp
           add_to_conversation('user', truncated_results)
 
           # Layer 3: Budget-managed history
-          clean_messages = prepare_messages_for_model(@conversation_history, trigger: 'tool_results')
+          clean_messages = prepare_current_history_for_model(trigger: 'tool_results')
 
           # Replace the last user message (truncated) with full results for this API call only
           if clean_messages.last && clean_messages.last[:role] == 'user'
@@ -1164,8 +1162,16 @@ module RedmineTxMcp
 
     def prepare_messages_for_model(messages, trigger:, force_compaction: false)
       compacted = compact_messages_if_needed(messages, trigger: trigger, force: force_compaction)
-      @conversation_history = compacted if messages.equal?(@conversation_history)
       clean_conversation_history(budget_conversation_history(compacted))
+    end
+
+    def prepare_current_history_for_model(trigger:, force_compaction: false)
+      @conversation_history = compact_messages_if_needed(
+        @conversation_history,
+        trigger: trigger,
+        force: force_compaction
+      )
+      clean_conversation_history(budget_conversation_history(@conversation_history))
     end
 
     def compact_messages_if_needed(messages, trigger:, force: false)
@@ -1179,7 +1185,7 @@ module RedmineTxMcp
 
       older_messages = messages.first(head_count)
       recent_messages = messages.last(keep_count)
-      summary = build_compaction_summary(older_messages, trigger: trigger)
+      summary = build_compaction_extract(older_messages, trigger: trigger)
       return messages if summary.blank?
 
       compacted = [{ role: 'user', content: summary }] + deep_dup(recent_messages)
@@ -1192,7 +1198,9 @@ module RedmineTxMcp
         messages.sum { |msg| message_chars(msg) } > COMPACTION_TRIGGER_CHARS
     end
 
-    def build_compaction_summary(messages, trigger:)
+    # Extractive compaction: preserve evidence/plan context while shrinking old prose and tool results.
+    # This is intentionally rule-based, not an LLM-generated summary.
+    def build_compaction_extract(messages, trigger:)
       text_snippets = []
       tool_counts = Hash.new(0)
       result_snippets = []
@@ -2001,7 +2009,14 @@ module RedmineTxMcp
         memo << "#{key}=#{rendered}" unless rendered.blank?
       end
       details.join(' | ')
-    rescue
+    rescue => e
+      ChatbotLogger.log_error(
+        session_id: conversation_id,
+        context: 'event_payload_detail',
+        error_class: e.class,
+        message: e.message,
+        backtrace: e.backtrace
+      )
       nil
     end
 
@@ -2139,6 +2154,9 @@ module RedmineTxMcp
       compacted_on_overflow = false
       attempted_fallback = false
 
+      # Retry envelope is bounded:
+      # 1. one compaction retry for context overflow
+      # 2. one provider fallback retry for retryable transport/provider failures
       loop do
         begin
           if event_handler
@@ -2163,7 +2181,7 @@ module RedmineTxMcp
           end
 
           fallback_provider = fallback_provider_for(provider)
-          if !attempted_fallback && fallback_provider && fallback_allowed_for?(e)
+          if !attempted_fallback && fallback_provider && fallback_allowed_for?(e, request: request)
             attempted_fallback = true
             @metrics[:provider_fallbacks] += 1
             @metrics[:last_fallback_provider] = fallback_provider
@@ -2203,11 +2221,18 @@ module RedmineTxMcp
       end
     end
 
-    def fallback_allowed_for?(error)
+    def fallback_allowed_for?(error, request:)
       return false unless feature_enabled?('provider_fallback')
       return false unless error.retryable?
+      return true if @write_tool_calls.zero?
+      return true if @successful_write_tool_calls.positive?
+      return true if @mutation_workflow.pending_verification? || @mutation_workflow.verification_failed?
 
-      @write_tool_calls.zero? || @mutation_workflow.pending_verification?
+      request_includes_tools?(request) == false
+    end
+
+    def request_includes_tools?(request)
+      Array(request[:tools] || request['tools']).any?
     end
 
     def stop_response_for(reason, event_handler: nil, detector: nil)
@@ -2499,10 +2524,13 @@ module RedmineTxMcp
       result.is_a?(String) ? result : RedmineTxMcp::LlmFormatEncoder.encode(result)
     end
 
-    def append_loop_warning_note(content, note)
-      return content if note.blank?
+    def append_loop_warning_notes(content, *notes)
+      Array(notes).flatten.each do |note|
+        next if note.blank?
 
-      "#{content}\n\n#{note}"
+        content = "#{content}\n\n#{note}"
+      end
+      content
     end
 
     def capability_refusal_response?(text)

@@ -734,7 +734,17 @@ module RedmineTxMcp
       elsif expected.nil?
         actual.nil?
       elsif expected.is_a?(Numeric)
-        actual.to_f == expected.to_f
+        case actual
+        when Numeric
+          actual.to_f == expected.to_f
+        when String
+          stripped = actual.strip
+          return false unless stripped.match?(/\A-?\d+(?:\.\d+)?\z/)
+
+          stripped.to_f == expected.to_f
+        else
+          false
+        end
       else
         actual.to_s == expected.to_s
       end
