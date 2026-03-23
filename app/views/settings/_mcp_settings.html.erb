@@ -270,8 +270,20 @@
   </p>
 
   <p>
+    <%= label_tag 'settings_max_run_seconds', 'Max Run Seconds' %>
+    <%= number_field_tag 'settings[max_run_seconds]', @settings['max_run_seconds'] || 180, min: 30, max: 900 %>
+    <em>Maximum runtime per chatbot turn (default: 180). Increase this together with tool depth for long analysis or batch jobs.</em>
+  </p>
+
+  <p>
     <%= label_tag 'settings_max_tool_call_depth', 'Max Tool Call Depth' %>
-    <%= number_field_tag 'settings[max_tool_call_depth]', @settings['max_tool_call_depth'] || 10, min: 1, max: 50 %>
-    <em>Maximum depth for recursive tool calls (default: 10). Higher values allow more complex operations but may increase response time.</em>
+    <%= number_field_tag 'settings[max_tool_call_depth]', @settings['max_tool_call_depth'] || 15, min: 1, max: 100 %>
+    <em>Baseline tool-call budget per turn (default: 15). Read-heavy analysis and batch requests raise this automatically when needed.</em>
+  </p>
+
+  <p>
+    <%= label_tag 'settings_max_loop_iterations', 'Max Loop Iterations' %>
+    <%= number_field_tag 'settings[max_loop_iterations]', @settings['max_loop_iterations'] || 0, min: 0, max: 150 %>
+    <em>Optional hard cap for response/tool loop iterations. Set 0 to auto-calculate from the active tool budget.</em>
   </p>
 </div>

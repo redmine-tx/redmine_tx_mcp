@@ -252,7 +252,9 @@ PROMPT
     max_request_size: 1024,
     enable_caching: false,
     cache_ttl: 300,
-    max_tool_call_depth: 10
+    max_run_seconds: 180,
+    max_tool_call_depth: 15,
+    max_loop_iterations: 0
   }, partial: 'settings/mcp_settings'
 
   project_module :redmine_tx_mcp do

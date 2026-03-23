@@ -15,7 +15,13 @@ module RedmineTxMcp
     MAX_HISTORY_CHARS = 80_000
     MAX_PERSISTED_MESSAGES = 60
     MAX_GUARD_RETRIES = 2
-    DEFAULT_MAX_RUN_SECONDS = 120
+    DEFAULT_MAX_RUN_SECONDS = 180
+    DEFAULT_MAX_TOOL_CALL_DEPTH = 15
+    MIN_COMPLEX_READ_TOOL_CALL_BUDGET = 18
+    MIN_RESEARCH_HEAVY_TOOL_CALL_BUDGET = 22
+    MIN_BULK_TOOL_CALL_BUDGET = 30
+    MIN_SPREADSHEET_BATCH_TOOL_CALL_BUDGET = 36
+    LONG_COMPLEX_REQUEST_CHARS = 45
     COMPACTION_TRIGGER_MESSAGE_COUNT = 28
     COMPACTION_KEEP_RECENT_MESSAGES = 12
     COMPACTION_TRIGGER_CHARS = 60_000
@@ -94,6 +100,12 @@ module RedmineTxMcp
 
     BULK_OPERATION_KEYWORDS = /
       일괄|대량|bulk|batch|한꺼번에|한번에|여러\s*(?:개|건|이슈)|모두|전체|전부
+    /ix
+
+    RESEARCH_HEAVY_KEYWORDS = /
+      유사|similar|과거|historical|이전|선례|근거|evidence|비교|compare|
+      추정시간|estimate(?:d)?|제안|suggest|추천|recommend|
+      하위\s*일감|child(?:ren)?|부모\s*일감|parent
     /ix
 
     # Layer 4: Dynamic tool selection — profiles and keyword mapping
@@ -1861,7 +1873,9 @@ module RedmineTxMcp
     end
 
     def requested_issue_count(message)
-      ids = message.to_s.scan(/#\d+|(?:이슈|issue)\s*#?\d+|\b\d+\s*번\b/i).map { |token| token.to_s.scan(/\d+/).first }
+      ids = message.to_s.scan(
+        /#\d+|(?:이슈|issue)\s*#?\d+|\b\d+\s*번(?=\s|[[:punct:]]|$|[은는이가을를의도만에로와과랑])/i
+      ).map { |token| token.to_s.scan(/\d+/).first }
       ids.uniq.size
     end
 
@@ -2104,8 +2118,8 @@ module RedmineTxMcp
     end
 
     def configured_max_tool_calls
-      configured = (chatbot_settings['max_tool_call_depth'].to_i rescue 10)
-      configured.positive? ? configured : 10
+      configured = (chatbot_settings['max_tool_call_depth'].to_i rescue DEFAULT_MAX_TOOL_CALL_DEPTH)
+      configured.positive? ? configured : DEFAULT_MAX_TOOL_CALL_DEPTH
     end
 
     def configured_max_iterations
@@ -2117,11 +2131,48 @@ module RedmineTxMcp
 
     def prepare_tool_call_budget(user_message)
       base = configured_max_tool_calls
-      @tool_call_budget = if bulk_operation_intent?(user_message)
-        [base, 30].max
-      else
-        base
+      complex_read_floor = complex_read_tool_call_floor(user_message)
+      batch_floor = batch_tool_call_floor(user_message)
+
+      @tool_call_budget = [base, complex_read_floor, batch_floor].max
+    end
+
+    def complex_read_tool_call_floor(message)
+      text = message.to_s
+      return 0 if mutation_intent?(text)
+      return MIN_RESEARCH_HEAVY_TOOL_CALL_BUDGET if research_heavy_request?(text)
+      return MIN_COMPLEX_READ_TOOL_CALL_BUDGET if bug_analysis_intent?(text) || version_progress_intent?(text)
+
+      if (factual_query_intent?(text) || analysis_intent?(text)) &&
+         (analysis_intent?(text) || text.length >= LONG_COMPLEX_REQUEST_CHARS)
+        return MIN_COMPLEX_READ_TOOL_CALL_BUDGET
       end
+
+      0
+    end
+
+    def batch_tool_call_floor(message)
+      text = message.to_s
+      issue_bonus = bulk_issue_budget_bonus(text)
+
+      if spreadsheet_intent?(text) && (bulk_operation_intent?(text) || mutation_intent?(text))
+        return MIN_SPREADSHEET_BATCH_TOOL_CALL_BUDGET + issue_bonus
+      end
+
+      return MIN_BULK_TOOL_CALL_BUDGET + issue_bonus if bulk_operation_intent?(text)
+
+      0
+    end
+
+    def research_heavy_request?(message)
+      message.to_s.match?(RESEARCH_HEAVY_KEYWORDS)
+    end
+
+    def bulk_issue_budget_bonus(message)
+      count = requested_issue_count(message)
+      return 0 if count < 4
+
+      [count - 3, 10].min
     end
 
     def max_tool_calls

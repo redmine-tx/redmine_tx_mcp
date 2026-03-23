@@ -64,8 +64,8 @@ end
 
 DEFAULT_PLUGIN_SETTINGS = {
   'system_prompt' => '',
-  'max_run_seconds' => '120',
-  'max_tool_call_depth' => '10',
+  'max_run_seconds' => '180',
+  'max_tool_call_depth' => '15',
   'max_loop_iterations' => '0',
   'openai_endpoint_url' => 'http://example.test/v1/chat/completions',
   'openai_api_key' => 'openai-test-key',

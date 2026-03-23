@@ -239,6 +239,38 @@ class ClaudeChatbotTest < ActiveSupport::TestCase
     assert_operator chatbot.send(:max_tool_calls), :>=, 30
   end
 
+  test "complex read analysis requests expand tool loop budget" do
+    chatbot = build_chatbot
+
+    chatbot.send(:prepare_tool_call_budget, '135316 일감의 하위 일감이 지금 추정시간이 없는데 과거 유사 일감을 고려해 추정시간을 제안해 줄래? 그근거도 같이 알려줘')
+
+    assert_operator chatbot.send(:max_tool_calls), :>=, 22
+  end
+
+  test "simple issue lookups keep the baseline tool budget" do
+    chatbot = build_chatbot
+
+    chatbot.send(:prepare_tool_call_budget, '이슈 135316 상태 알려줘')
+
+    assert_equal 15, chatbot.send(:max_tool_calls)
+  end
+
+  test "spreadsheet batch mutation requests reserve extra tool budget" do
+    chatbot = build_chatbot
+
+    chatbot.send(:prepare_tool_call_budget, 'report.xlsx 기준으로 이슈 101번, 102번, 103번, 104번을 한꺼번에 수정하고 결과 엑셀도 만들어줘')
+
+    assert_operator chatbot.send(:max_tool_calls), :>=, 37
+  end
+
+  test "requested issue count handles korean particles on trailing ids" do
+    chatbot = build_chatbot
+
+    count = chatbot.send(:requested_issue_count, '이슈 101번, 102번, 103번, 104번을 한꺼번에 수정해줘')
+
+    assert_equal 4, count
+  end
+
   test "bulk mutation requests expose insert_bulk_update tool" do
     chatbot = build_chatbot
 
