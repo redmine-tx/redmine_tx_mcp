@@ -37,6 +37,7 @@ module RedmineTxMcp
       'issue_schedule_tree' => { read_only: true, entity_type: 'issue', idempotent: true },
       'issue_create' => { side_effecting: true, verify_with: %w[issue_get], entity_type: 'issue' },
       'issue_update' => { side_effecting: true, verify_with: %w[issue_get], entity_type: 'issue' },
+      'issue_bulk_update' => { side_effecting: true, verify_with: %w[issue_get issue_list], entity_type: 'issue' },
       'insert_bulk_update' => { side_effecting: true, verify_with: %w[issue_get issue_list], entity_type: 'issue' },
       'issue_delete' => { side_effecting: true, confirm_required: true, entity_type: 'issue' },
       'issue_relation_create' => { side_effecting: true, verify_with: %w[issue_relations_get issue_get], entity_type: 'issue_relation' },
@@ -202,7 +203,7 @@ module RedmineTxMcp
       end
 
       if Array(@state.dig('resolved_entities', 'issue_ids')).any?
-        tools.merge(%w[issue_list issue_get issue_relations_get issue_update insert_bulk_update])
+        tools.merge(%w[issue_list issue_get issue_relations_get issue_update issue_bulk_update])
       end
 
       if Array(@state.dig('resolved_entities', 'version_ids')).any?
@@ -297,6 +298,8 @@ module RedmineTxMcp
       parts = ["앞선 변경 #{tool}의 read-back 검증이 아직 끝나지 않았습니다."]
       parts << "대상: #{target_text}" unless blank_string?(target_text)
       parts << "다음 조회 도구로 검증하세요: #{verify_with.join(', ')}." if verify_with.any?
+      guidance = verification_guidance_for(pending)
+      parts << guidance if guidance
       parts.join(' ')
     end
 
@@ -325,7 +328,7 @@ module RedmineTxMcp
       read_only = READ_ONLY_PATTERNS.any? { |pattern| pattern.match?(tool_name) }
       side_effecting = !read_only && (tool_name == 'spreadsheet_export_report' || tool_name.match?(/(?:create|update|delete|add_member|remove_member|apply)\z/))
       entity_type =
-        if tool_name.start_with?('issue_') || tool_name == 'insert_bulk_update'
+        if tool_name.start_with?('issue_') || %w[insert_bulk_update issue_bulk_update].include?(tool_name)
           'issue'
         elsif tool_name.start_with?('version_')
           'version'
@@ -462,7 +465,9 @@ module RedmineTxMcp
         @state['pending_mutation'] = mutation_state
         @state['status'] = 'write_executed'
         verify_tools = Array(metadata[:verify_with]).join(', ')
-        "변경 도구 #{tool_name} 실행이 성공했습니다. 완료로 보고하기 전에 #{verify_tools}로 read-back 검증이 필요합니다."
+        message = "변경 도구 #{tool_name} 실행이 성공했습니다. 완료로 보고하기 전에 #{verify_tools}로 read-back 검증이 필요합니다."
+        guidance = verification_guidance_for(mutation_state)
+        guidance ? "#{message} #{guidance}" : message
       else
         @state['pending_mutation'] = {}
         @state['last_verification'] = {
@@ -524,7 +529,7 @@ module RedmineTxMcp
       case pending['tool']
       when 'issue_update', 'issue_create'
         verify_single_issue_readback(tool_name, result, pending)
-      when 'insert_bulk_update'
+      when 'issue_bulk_update', 'insert_bulk_update'
         verify_bulk_issue_readback(tool_name, result, pending)
       when 'issue_auto_schedule_apply'
         verify_auto_schedule_apply_readback(tool_name, result, pending)
@@ -771,7 +776,7 @@ module RedmineTxMcp
     end
 
     def required_sample_size_for(tool_name, tool_input, result)
-      if tool_name.to_s == 'insert_bulk_update'
+      if %w[issue_bulk_update insert_bulk_update].include?(tool_name.to_s)
         issue_ids = extract_issue_ids(tool_name, tool_input, result)
         return [issue_ids.size, 3].min
       end
@@ -1147,6 +1152,17 @@ module RedmineTxMcp
         current = current[key.to_s]
       end
       current
+    end
+
+    def verification_guidance_for(pending)
+      return nil unless pending
+
+      case pending['tool'].to_s
+      when 'issue_bulk_update', 'insert_bulk_update'
+        '여러 건을 따로 읽지 말고 issue_get(ids: [...]) 한 번으로 표본을 묶어 확인하세요. CF까지 봐야 하면 issue_list에 include_custom_fields: true를 사용하세요.'
+      when 'issue_auto_schedule_apply'
+        '여러 하위 이슈를 따로 읽지 말고 issue_schedule_tree 또는 issue_get(ids: [...])로 묶어서 확인하세요.'
+      end
     end
 
     def stringify(object)

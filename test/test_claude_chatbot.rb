@@ -17,7 +17,7 @@ class ClaudeChatbotTest < ActiveSupport::TestCase
 
     assert_includes tool_names, 'issue_get'
     assert_includes tool_names, 'issue_update'
-    assert_includes tool_names, 'insert_bulk_update'
+    assert_includes tool_names, 'issue_bulk_update'
     assert_includes tool_names, 'enum_statuses'
   end
 
@@ -41,7 +41,7 @@ class ClaudeChatbotTest < ActiveSupport::TestCase
     assert_includes tool_names, 'issue_get'
     assert_includes tool_names, 'user_get'
     refute_includes tool_names, 'issue_update'
-    refute_includes tool_names, 'insert_bulk_update'
+    refute_includes tool_names, 'issue_bulk_update'
   end
 
   test "relation queries expose relation inspection tools" do
@@ -74,7 +74,7 @@ class ClaudeChatbotTest < ActiveSupport::TestCase
     plan = chatbot.send(:build_execution_plan, '이슈 101번, 102번, 103번을 모두 QA로 변경해줘')
 
     assert_not_nil plan
-    assert_match(/insert_bulk_update/, plan[:steps].last)
+    assert_match(/issue_bulk_update/, plan[:steps].last)
   end
 
   test "build_execution_plan returns english plan for english request" do
@@ -119,7 +119,7 @@ class ClaudeChatbotTest < ActiveSupport::TestCase
     assert_includes tool_names, 'spreadsheet_list_uploads'
     assert_includes tool_names, 'spreadsheet_extract_rows'
     assert_includes tool_names, 'spreadsheet_export_report'
-    assert_includes tool_names, 'insert_bulk_update'
+    assert_includes tool_names, 'issue_bulk_update'
   end
 
   test "auto schedule requests expose preview and apply tools" do
@@ -348,13 +348,13 @@ class ClaudeChatbotTest < ActiveSupport::TestCase
     assert_equal 4, count
   end
 
-  test "bulk mutation requests expose insert_bulk_update tool" do
+  test "bulk mutation requests expose issue_bulk_update tool" do
     chatbot = build_chatbot
 
     chatbot.send(:select_tools_for_query, '이슈 101번, 102번, 103번을 모두 QA로 변경해줘')
     tool_names = chatbot.send(:available_mcp_tools, force_all: true).map { |tool| tool[:name] }
 
-    assert_includes tool_names, 'insert_bulk_update'
+    assert_includes tool_names, 'issue_bulk_update'
   end
 
   test "budget_conversation_history prioritizes recent turns over the first question" do

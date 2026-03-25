@@ -34,7 +34,8 @@ class McpIntegrationTest < ActiveSupport::TestCase
     assert_includes issue_tool_names, 'issue_get'
     assert_includes issue_tool_names, 'issue_relations_get'
     assert_includes issue_tool_names, 'issue_create'
-    assert_includes issue_tool_names, 'insert_bulk_update'
+    assert_includes issue_tool_names, 'issue_bulk_update'
+    refute_includes issue_tool_names, 'insert_bulk_update'
     assert_includes issue_tool_names, 'issue_relation_create'
     assert_includes issue_tool_names, 'issue_relation_delete'
     assert_includes issue_tool_names, 'issue_auto_schedule_preview'
@@ -91,6 +92,20 @@ class McpIntegrationTest < ActiveSupport::TestCase
     assert result.is_a?(Hash)
     assert result.key?(:error)
     assert_equal "Issue not found", result[:error]
+  end
+
+  test "deprecated insert_bulk_update alias still works" do
+    User.current = User.find(1)
+    issue = Issue.visible(User.current).find_by(project_id: 1)
+    assert issue.present?
+
+    result = indifferent(RedmineTxMcp::Tools::IssueTool.call_tool('insert_bulk_update', {
+      'issue_ids' => [issue.id],
+      'notes' => 'deprecated alias check'
+    }))
+
+    assert_equal true, result[:success]
+    assert_includes result[:updated_issue_ids], issue.id
   end
 
   test "issue_get hides private journals from users without private note permission" do

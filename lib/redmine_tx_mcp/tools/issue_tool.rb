@@ -124,8 +124,8 @@ module RedmineTxMcp
               }
             },
             {
-              name: "insert_bulk_update",
-              description: "Bulk update multiple existing issues in one call. Prefer this when the same change applies to several issues. By default it is atomic: if any issue fails, no changes are applied. Set clearable fields to null to remove them.",
+              name: "issue_bulk_update",
+              description: "Bulk update multiple existing issues in one call. Prefer this when the same change applies to several issues, including the same custom field values. After updating, verify several targets together with one issue_get(ids: [...]) call instead of repeated single-issue reads. By default it is atomic: if any issue fails, no changes are applied. Set clearable fields to null to remove them.",
               inputSchema: {
                 type: "object",
                 properties: {
@@ -303,7 +303,7 @@ module RedmineTxMcp
             create_issue(arguments)
           when "issue_update"
             update_issue(arguments)
-          when "insert_bulk_update"
+          when "issue_bulk_update", "insert_bulk_update"
             bulk_update_issues(arguments)
           when "issue_delete"
             delete_issue(arguments)

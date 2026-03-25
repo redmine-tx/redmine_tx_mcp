@@ -128,13 +128,13 @@ module RedmineTxMcp
       spreadsheet_work: %w[
         spreadsheet_list_uploads spreadsheet_list_sheets spreadsheet_preview_sheet
         spreadsheet_extract_rows spreadsheet_export_report
-        issue_list issue_get issue_update insert_bulk_update issue_relation_create issue_relation_delete
+        issue_list issue_get issue_update issue_bulk_update issue_relation_create issue_relation_delete
         enum_statuses enum_trackers enum_priorities enum_categories enum_custom_fields
         user_list user_get version_list version_get
       ],
       bug_analysis: %w[bug_statistics issue_list issue_get version_list version_get],
       issue_management: %w[
-        issue_get issue_relations_get issue_create issue_update insert_bulk_update
+        issue_get issue_relations_get issue_create issue_update issue_bulk_update
         issue_auto_schedule_preview issue_auto_schedule_apply
         issue_relation_create issue_relation_delete
         enum_statuses enum_trackers enum_priorities enum_categories enum_custom_fields
@@ -177,7 +177,7 @@ module RedmineTxMcp
     SPREADSHEET_ENGLISH_REGEX = /\b(?:excel|xlsx|csv|tsv|spreadsheet|sheet|workbook|upload(?:ed)?|attach(?:ed|ment)?)\b/i
 
     BASE_TOOLS = %w[
-      issue_list issue_get issue_relations_get issue_create issue_update insert_bulk_update issue_relation_create issue_relation_delete issue_children_summary issue_schedule_tree
+      issue_list issue_get issue_relations_get issue_create issue_update issue_bulk_update issue_relation_create issue_relation_delete issue_children_summary issue_schedule_tree
       version_list version_get version_overview version_schedule_report bug_statistics
       enum_statuses enum_trackers enum_priorities enum_categories enum_custom_fields
       user_list user_get
@@ -1349,7 +1349,7 @@ module RedmineTxMcp
       end
 
       if assignment_intent?(msg_lower)
-        matched_tools.merge(%w[user_list user_get issue_update insert_bulk_update])
+        matched_tools.merge(%w[user_list user_get issue_update issue_bulk_update])
       end
 
       if auto_schedule_intent?(msg_lower)
@@ -1361,7 +1361,7 @@ module RedmineTxMcp
       end
 
       if schedule_or_version_intent?(msg_lower)
-        matched_tools.merge(%w[version_list version_get issue_update insert_bulk_update])
+        matched_tools.merge(%w[version_list version_get issue_update issue_bulk_update])
       end
 
       if relation_intent?(msg_lower)
@@ -1604,14 +1604,14 @@ module RedmineTxMcp
       localized_plan(
         korean,
         [
-          "#{target}의 현재 상태를 먼저 확인합니다.",
+          "가능하면 issue_list 한 번으로 #{target}를 모으고, CF 검증이 필요하면 include_custom_fields를 함께 사용합니다.",
           "#{change}에 필요한 상태, 담당자, 버전 같은 유효 값을 조회합니다.",
-          "insert_bulk_update로 #{change}를 일괄 적용한 뒤 결과를 검증합니다."
+          "issue_bulk_update로 #{change}를 일괄 적용한 뒤, issue_get(ids: [...]) 한 번 또는 issue_list(include_custom_fields: true)로 표본 검증합니다."
         ],
         [
-          "Inspect the current state of #{target} first.",
+          "Prefer one issue_list call to gather #{target}, and enable include_custom_fields when CF verification matters.",
           "Look up any valid status, assignee, or version values needed for #{change}.",
-          "Apply #{change} with insert_bulk_update and verify the results."
+          "Apply #{change} with issue_bulk_update, then verify a sample with one issue_get(ids: [...]) call or issue_list(include_custom_fields: true)."
         ]
       )
     end
