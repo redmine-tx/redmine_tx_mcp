@@ -153,6 +153,10 @@ module RedmineTxMcp
       hash_or_nil(@state['pending_mutation'])
     end
 
+    def status
+      @state['status'].to_s
+    end
+
     def pending?
       !!(pending_mutation && pending_mutation['verification_status'] != 'passed')
     end
@@ -253,6 +257,27 @@ module RedmineTxMcp
       end
 
       lines.join("\n")
+    end
+
+    def last_read_tool_name
+      @state.dig('last_read_evidence', 'tool').to_s
+    end
+
+    def last_read_result
+      hash_or_empty(@state['last_read_evidence'])
+    end
+
+    def recent_child_scope_read?
+      %w[issue_children_summary issue_schedule_tree].include?(last_read_tool_name)
+    end
+
+    def recent_parent_issue_read?
+      evidence = last_read_result
+      return false if evidence.empty?
+      return false unless last_read_tool_name == 'issue_get'
+
+      result = hash_or_empty(evidence['result'])
+      result['children_count'].to_i.positive?
     end
 
     def verification_pending_message
@@ -1028,6 +1053,15 @@ module RedmineTxMcp
       summary = {}
       %w[id success message error updated_count failed_count file_name download_path].each do |key|
         summary[key] = deep_dup(result[key]) if result.key?(key)
+      end
+
+      if result['children'].is_a?(Array)
+        summary['children_count'] = result['children'].size
+        summary['child_ids'] = Array(result['children']).first(5).map { |issue| integer_or_nil(stringify(issue)['id']) }.compact
+      end
+
+      if result['children_by_stage'].is_a?(Hash)
+        summary['children_count'] = result['children_by_stage'].values.sum { |children| Array(children).size }
       end
 
       if result['relation'].is_a?(Hash)

@@ -16,7 +16,7 @@ module RedmineTxMcp
     MAX_PERSISTED_MESSAGES = 60
     MAX_GUARD_RETRIES = 2
     DEFAULT_MAX_RUN_SECONDS = 180
-    DEFAULT_MAX_TOOL_CALL_DEPTH = 25
+    DEFAULT_MAX_TOOL_CALL_DEPTH = 15
     COMPLEX_READ_BUDGET_RATIO = 1.2
     RESEARCH_HEAVY_BUDGET_RATIO = 1.4
     BULK_BUDGET_RATIO = 1.8
@@ -465,11 +465,17 @@ module RedmineTxMcp
     end
 
     def external_mcp_tools(force_all: false)
-      if force_all || @selected_tool_names.nil?
-        all_mcp_tools
-      else
-        all_mcp_tools.select { |t| @selected_tool_names.include?(t[:name]) }
-      end
+      tools =
+        if force_all || @selected_tool_names.nil?
+          all_mcp_tools
+        else
+          all_mcp_tools.select { |t| @selected_tool_names.include?(t[:name]) }
+        end
+
+      return tools if force_all
+
+      allowed_names = allowed_external_tool_names(tools.map { |tool| tool[:name] })
+      tools.select { |tool| allowed_names.include?(tool[:name]) }
     end
 
     # Layer 4: Return filtered tools if @selected_tool_names is set, otherwise all
@@ -1407,16 +1413,15 @@ module RedmineTxMcp
 
     def mutation_follow_up_candidate?(user_message)
       @mutation_workflow.pending_verification? ||
-        RedmineTxMcp::ChatbotMutationWorkflow.follow_up_reference?(user_message)
+        explicit_follow_up_reference?(user_message) ||
+        implicit_follow_up_reference?(user_message)
     end
 
     def follow_up_restore_preferred?(user_message)
       return false unless mutation_follow_up_candidate?(user_message)
-      return false unless @mutation_workflow.has_follow_up_context? || (plan_pending? && @selected_tool_names.present?)
+      return false unless follow_up_context_available?
 
-      message = user_message.to_s
-      no_new_targets = extract_issue_refs(message).empty? && extract_file_refs(message).empty?
-      no_new_targets && message.length <= 40
+      follow_up_message_without_new_targets?(user_message)
     end
 
     def follow_up_tools_from_mutation_context
@@ -1424,6 +1429,55 @@ module RedmineTxMcp
       tools.merge(Array(@selected_tool_names)) if plan_pending? && @selected_tool_names.present?
       tools.merge(@mutation_workflow.follow_up_tool_names)
       tools.to_a
+    end
+
+    def allowed_external_tool_names(candidate_names)
+      names = Array(candidate_names).map(&:to_s)
+      return names if names.empty?
+
+      if @mutation_workflow.pending_verification?
+        allowed = Set.new(@mutation_workflow.verify_with_tools)
+        allowed.merge(Array(@mutation_workflow.follow_up_tool_names).select { |name| read_only_tool?(name) })
+        filtered = names.select { |name| allowed.include?(name) }
+        return filtered if filtered.any?
+      end
+
+      if mutation_read_phase?
+        filtered = names.select { |name| read_only_tool?(name) }
+        return filtered if filtered.any?
+      end
+
+      names
+    end
+
+    def mutation_read_phase?
+      return false if @mutation_workflow.pending_verification?
+      return false unless @successful_write_tool_calls.zero?
+
+      %w[intent_detected target_resolved].include?(@mutation_workflow.status)
+    end
+
+    def follow_up_context_available?
+      @mutation_workflow.has_follow_up_context? || (plan_pending? && @selected_tool_names.present?)
+    end
+
+    def explicit_follow_up_reference?(user_message)
+      RedmineTxMcp::ChatbotMutationWorkflow.follow_up_reference?(user_message)
+    end
+
+    def implicit_follow_up_reference?(user_message)
+      return false unless @previous_tool_call_budget&.positive?
+      return false unless follow_up_context_available?
+
+      follow_up_message_without_new_targets?(user_message)
+    end
+
+    def follow_up_message_without_new_targets?(user_message)
+      message = user_message.to_s.strip
+      return false if message.empty?
+
+      no_new_targets = extract_issue_refs(message).empty? && extract_file_refs(message).empty?
+      no_new_targets && message.length <= 40
     end
 
     def build_execution_plan(user_message)
@@ -1645,12 +1699,12 @@ module RedmineTxMcp
         korean,
         [
           "issue_list로 #{scope}를 찾습니다. 이름 기반 필터가 있으면 우선 활용합니다.",
-          "#{detail_target}이 정해지면 issue_get으로 상세 필드, 부모, 현재 관계를 확인합니다.",
+          "#{detail_target}이 정해지면 issue_get으로 상세 필드, 부모, 현재 관계를 확인하고, 상위 이슈 진행/일정 질문이면 issue_children_summary 또는 issue_schedule_tree로 자식 전체를 함께 봅니다.",
           "#{conclusion}에 대해 근거와 함께 결론을 정리합니다."
         ],
         [
           "Use issue_list to find #{scope}, using name-based filters when possible.",
-          "Once #{detail_target} is exact, switch to issue_get for detailed fields, parent info, and current relations.",
+          "Once #{detail_target} is exact, switch to issue_get for detailed fields, parent info, and current relations, then expand to issue_children_summary or issue_schedule_tree when the exact issue is a parent and the user is asking about progress or schedule.",
           "Summarize #{conclusion} with supporting evidence."
         ]
       )
@@ -2191,7 +2245,7 @@ module RedmineTxMcp
     end
 
     def follow_up_continuation?(user_message)
-      RedmineTxMcp::ChatbotMutationWorkflow.follow_up_reference?(user_message)
+      explicit_follow_up_reference?(user_message) || implicit_follow_up_reference?(user_message)
     end
 
     def complex_read_tool_call_floor(message)
@@ -2671,6 +2725,15 @@ module RedmineTxMcp
       message.length >= 40
     end
 
+    def parent_issue_progress_scope?(message)
+      text = message.to_s
+      return false unless text.present?
+
+      asks_parent = text.match?(/부모\s*이슈|상위\s*이슈|하위\s*일감|자식\s*일감|children?|parent/i)
+      asks_progress = version_progress_intent?(text) || schedule_or_version_intent?(text) || analysis_intent?(text)
+      asks_parent && asks_progress
+    end
+
     def guard_retry_instruction(response, user_message)
       assistant_message = extract_text_content(response)
 
@@ -2700,6 +2763,20 @@ module RedmineTxMcp
         return {
           instruction: '[시스템] 최근 read-back 검증이 요청한 변경과 일치하지 않았습니다. 성공으로 보고하지 말고, 불일치 내용을 설명하거나 필요한 조회/수정을 다시 수행하세요.',
           status: '검증 불일치 내용을 다시 확인 중입니다...',
+          force_all_tools: true,
+          tool_choice: { type: 'any' },
+          include_internal_tools: false
+        }
+      end
+
+      if parent_issue_progress_scope?(user_message) &&
+         @mutation_workflow.recent_parent_issue_read? &&
+         !@mutation_workflow.recent_child_scope_read? &&
+         @guard_retry_counts[:parent_child_scope] < 1
+        @guard_retry_counts[:parent_child_scope] += 1
+        return {
+          instruction: '[시스템] 방금 확인한 이슈는 자식 일감이 있는 상위 이슈입니다. 진행률, 지연, 일정 질문에는 부모만 보고 끝내지 말고 issue_children_summary 또는 issue_schedule_tree를 호출해 자식 전체 상태를 확인한 뒤 답하세요.',
+          status: '상위 이슈의 자식 전체 상태를 다시 확인 중입니다...',
           force_all_tools: true,
           tool_choice: { type: 'any' },
           include_internal_tools: false

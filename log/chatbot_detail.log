@@ -515,3 +515,441 @@ calls: 0/10 | remaining: 10 | iteration: 0
 [2026-03-25 15:22:45] BUDGET TRIM
 session: 9db05011756015ac
 3 → 2 messages (80000 char budget)
+[2026-03-25 15:32:26] TOOL LOOP
+session: cf8d36e5a11afcb2
+calls: 0/10 | remaining: 10 | iteration: 0
+[2026-03-25 15:32:26] --- STREAM STOP_REASON ---
+session: cf8d36e5a11afcb2 | enum_call: #1 | PID: 2182273 | TID: 720
+reason=hard_cap
+
+[2026-03-25 15:32:26] PROVIDER FALLBACK
+session: 537c1c9d87301342
+anthropic -> openai (retryable=true, write_calls=0, pending_verify=false)
+[2026-03-25 15:32:26] --- STREAM PHASE ---
+session: 537c1c9d87301342 | enum_call: #1 | PID: 2182273 | TID: 720
+phase=provider_fallback | from=anthropic | to=openai | reason=Anthropic API Error: 503
+
+[2026-03-25 15:32:26] TOOL SELECT
+session: 885c89be8313f024
+23 tools: issue_list, issue_get, issue_relations_get, issue_create, issue_update, insert_bulk_update, issue_relation_create, issue_relation_delete, issue_children_summary, issue_schedule_tree, version_list, version_get, version_overview, version_schedule_report, bug_statistics, enum_statuses, enum_trackers, enum_priorities, enum_categories, enum_custom_fields, user_list, user_get, run_script
+[2026-03-25 15:32:26] TOOL SELECT
+session: 0584c48e5454a29b
+25 tools: issue_list, issue_get, issue_relations_get, issue_create, issue_update, insert_bulk_update, issue_relation_create, issue_relation_delete, issue_children_summary, issue_schedule_tree, version_list, version_get, version_overview, version_schedule_report, bug_statistics, enum_statuses, enum_trackers, enum_priorities, enum_categories, enum_custom_fields, user_list, user_get, run_script, issue_auto_schedule_preview, issue_auto_schedule_apply
+[2026-03-25 15:32:26] TOOL SELECT
+session: 04e193bf6138f6c9
+27 tools: issue_list, issue_get, issue_relations_get, issue_create, issue_update, insert_bulk_update, issue_relation_create, issue_relation_delete, issue_children_summary, issue_schedule_tree, version_list, version_get, version_overview, version_schedule_report, bug_statistics, enum_statuses, enum_trackers, enum_priorities, enum_categories, enum_custom_fields, user_list, user_get, run_script, version_statistics, version_create, version_update, version_delete
+[2026-03-25 15:32:26] WRITE GUARD
+session: c8bffe7d6d9bd0a6
+쓰기 도구 issue_update 실행을 보류했습니다. 이번 단계에서는 조회 결과를 먼저 확인해야 해서 쓰기 도구를 보류했습니다. 필요한 변경이 맞으면 다음 단계에서 다시 호출하세요.
+[2026-03-25 15:32:26] PROVIDER RETRY
+session: 52bd6de2f8a10f25
+context overflow on openai, compacting and retrying
+[2026-03-25 15:32:26] COMPACTION
+session: 52bd6de2f8a10f25
+trigger=context_overflow removed_messages=5 saved_chars=6426
+[2026-03-25 15:32:26] TOOL SELECT
+session: 326872f084238023
+25 tools: issue_list, issue_get, issue_relations_get, issue_create, issue_update, insert_bulk_update, issue_relation_create, issue_relation_delete, issue_children_summary, issue_schedule_tree, version_list, version_get, version_overview, version_schedule_report, bug_statistics, enum_statuses, enum_trackers, enum_priorities, enum_categories, enum_custom_fields, user_list, user_get, run_script, issue_auto_schedule_preview, issue_auto_schedule_apply
+[2026-03-25 15:32:26] TOOL SELECT
+session: 326872f084238023
+restoring 25 tools from mutation/evidence context before keyword selection
+[2026-03-25 15:32:26] BUDGET TRIM
+session: 12b4ccdd24027457
+3 → 2 messages (80000 char budget)
+[2026-03-25 15:32:26] TOOL SELECT
+session: ef89ffde66649bb6
+restoring 28 tools from mutation/evidence context before keyword selection
+[2026-03-25 15:32:26] TOOL SELECT
+session: 0b8671e87d37ee44
+25 tools: issue_list, issue_get, issue_relations_get, issue_create, issue_update, insert_bulk_update, issue_relation_create, issue_relation_delete, issue_children_summary, issue_schedule_tree, version_list, version_get, version_overview, version_schedule_report, bug_statistics, enum_statuses, enum_trackers, enum_priorities, enum_categories, enum_custom_fields, user_list, user_get, run_script, issue_auto_schedule_preview, issue_auto_schedule_apply
+[2026-03-25 15:32:26] TOOL LOOP
+session: d9b468a53df7ba50
+calls: 0/10 | remaining: 10 | iteration: 0
+[2026-03-25 15:32:26] LOOP GUARD
+session: 593db097a49d6d10
+issue_get no_progress warning count=4
+[2026-03-25 15:32:26] LOOP GUARD
+session: 593db097a49d6d10
+[loop_guard:no_progress] 같은 도구 호출이 같은 결과로 6회 반복되어 더 이상 실행하지 않았습니다. 현재 상태를 요약하고 다른 전략을 선택하세요.
+[2026-03-25 15:32:26] --- STREAM PHASE ---
+session: 88ffb92a34be4a6f | enum_call: #1 | PID: 2182273 | TID: 720
+phase=write | tool=issue_update
+
+[2026-03-25 15:32:26] --- STREAM TOOL_CALL ---
+session: 88ffb92a34be4a6f | enum_call: #2 | PID: 2182273 | TID: 720
+tool=issue_update | input={"id":123,"status_id":5}
+
+[2026-03-25 15:32:26] --- STREAM TOOL_RESULT ---
+session: 88ffb92a34be4a6f | enum_call: #3 | PID: 2182273 | TID: 720
+tool=issue_update
+
+[2026-03-25 15:32:26] --- STREAM VERIFY ---
+session: 88ffb92a34be4a6f | enum_call: #4 | PID: 2182273 | TID: 720
+status=pending | tool=issue_update | verify_with=["issue_get"]
+
+[2026-03-25 15:32:26] MUTATION VERIFY
+session: c17a68ca63a27da4
+쓰기 도구 issue_relation_create 실행을 보류했습니다. 앞선 변경 issue_update의 read-back 검증이 아직 끝나지 않았습니다. 대상: 123 다음 조회 도구로 검증하세요: issue_get.
+[2026-03-25 15:32:26] TOOL BUDGET
+session: abcd11db9c931eb9
+도구 호출 한도(1)에 도달해 user_get 실행을 건너뛰었습니다. 현재까지 결과만으로 정리하세요.
+[2026-03-25 15:32:26] WRITE GUARD
+session: e8d6180c3d46ccfd
+쓰기 도구 issue_relation_create 실행을 보류했습니다. 쓰기 도구는 한 단계에서 하나씩만 실행합니다. 앞선 변경 결과를 확인한 뒤 다시 호출하세요.
+[2026-03-25 15:32:26] COMPACTION
+session: 6daa4426779fc3f0
+trigger=manual_compaction removed_messages=7 saved_chars=15150
+[2026-03-25 15:32:26] TOOL LOOP
+session: 6bc15c33f1ec564b
+calls: 0/10 | remaining: 10 | iteration: 0
+[2026-03-25 15:32:26] TOOL SELECT
+session: ad8f567b8ef06393
+23 tools: issue_list, issue_get, issue_relations_get, issue_create, issue_update, insert_bulk_update, issue_relation_create, issue_relation_delete, issue_children_summary, issue_schedule_tree, version_list, version_get, version_overview, version_schedule_report, bug_statistics, enum_statuses, enum_trackers, enum_priorities, enum_categories, enum_custom_fields, user_list, user_get, run_script
+[2026-03-25 15:32:26] TOOL SELECT
+session: 8601543e3c3a03fc
+25 tools: issue_list, issue_get, issue_relations_get, issue_create, issue_update, insert_bulk_update, issue_relation_create, issue_relation_delete, issue_children_summary, issue_schedule_tree, version_list, version_get, version_overview, version_schedule_report, bug_statistics, enum_statuses, enum_trackers, enum_priorities, enum_categories, enum_custom_fields, user_list, user_get, run_script, issue_auto_schedule_preview, issue_auto_schedule_apply
+[2026-03-25 15:32:26] TOOL SELECT
+session: 66bd78bea2c10129
+30 tools: issue_list, issue_get, issue_relations_get, issue_create, issue_update, insert_bulk_update, issue_relation_create, issue_relation_delete, issue_children_summary, issue_schedule_tree, version_list, version_get, version_overview, version_schedule_report, bug_statistics, enum_statuses, enum_trackers, enum_priorities, enum_categories, enum_custom_fields, user_list, user_get, run_script, spreadsheet_list_uploads, spreadsheet_list_sheets, spreadsheet_preview_sheet, spreadsheet_extract_rows, spreadsheet_export_report, issue_auto_schedule_preview, issue_auto_schedule_apply
+[2026-03-25 15:32:26] PROVIDER FALLBACK
+session: a629c1b2bc5a9319
+anthropic -> openai (retryable=true, write_calls=1, pending_verify=false)
+[2026-03-25 15:32:26] TOOL SELECT
+session: 1a53c2be9fb37a98
+25 tools: issue_list, issue_get, issue_relations_get, issue_create, issue_update, insert_bulk_update, issue_relation_create, issue_relation_delete, issue_children_summary, issue_schedule_tree, version_list, version_get, version_overview, version_schedule_report, bug_statistics, enum_statuses, enum_trackers, enum_priorities, enum_categories, enum_custom_fields, user_list, user_get, run_script, issue_auto_schedule_preview, issue_auto_schedule_apply
+[2026-03-25 15:32:26] TOOL SELECT
+session: 3844eb530d084377
+25 tools: issue_list, issue_get, issue_relations_get, issue_create, issue_update, insert_bulk_update, issue_relation_create, issue_relation_delete, issue_children_summary, issue_schedule_tree, version_list, version_get, version_overview, version_schedule_report, bug_statistics, enum_statuses, enum_trackers, enum_priorities, enum_categories, enum_custom_fields, user_list, user_get, run_script, issue_auto_schedule_preview, issue_auto_schedule_apply
+[2026-03-25 15:44:51] TOOL SELECT
+session: 2b4d74aa49a9def4
+25 tools: issue_list, issue_get, issue_relations_get, issue_create, issue_update, insert_bulk_update, issue_relation_create, issue_relation_delete, issue_children_summary, issue_schedule_tree, version_list, version_get, version_overview, version_schedule_report, bug_statistics, enum_statuses, enum_trackers, enum_priorities, enum_categories, enum_custom_fields, user_list, user_get, run_script, issue_auto_schedule_preview, issue_auto_schedule_apply
+[2026-03-25 15:44:51] TOOL SELECT
+session: 1e89fc61efb6b4ae
+restoring 23 tools from mutation/evidence context before keyword selection
+[2026-03-25 15:44:51] TOOL SELECT
+session: 33bf71353266e1e6
+25 tools: issue_list, issue_get, issue_relations_get, issue_create, issue_update, insert_bulk_update, issue_relation_create, issue_relation_delete, issue_children_summary, issue_schedule_tree, version_list, version_get, version_overview, version_schedule_report, bug_statistics, enum_statuses, enum_trackers, enum_priorities, enum_categories, enum_custom_fields, user_list, user_get, run_script, issue_auto_schedule_preview, issue_auto_schedule_apply
+[2026-03-25 15:44:51] TOOL SELECT
+session: 92d423eebfe5ec50
+restoring 28 tools from mutation/evidence context before keyword selection
+[2026-03-25 15:44:51] MUTATION VERIFY
+session: 97b49294267f8f5a
+쓰기 도구 issue_relation_create 실행을 보류했습니다. 앞선 변경 issue_update의 read-back 검증이 아직 끝나지 않았습니다. 대상: 123 다음 조회 도구로 검증하세요: issue_get.
+[2026-03-25 15:44:51] TOOL SELECT
+session: a9823eb6a548fc3c
+27 tools: issue_list, issue_get, issue_relations_get, issue_create, issue_update, insert_bulk_update, issue_relation_create, issue_relation_delete, issue_children_summary, issue_schedule_tree, version_list, version_get, version_overview, version_schedule_report, bug_statistics, enum_statuses, enum_trackers, enum_priorities, enum_categories, enum_custom_fields, user_list, user_get, run_script, version_statistics, version_create, version_update, version_delete
+[2026-03-25 15:44:51] BUDGET TRIM
+session: d5f55cd9e72a1d5c
+3 → 2 messages (80000 char budget)
+[2026-03-25 15:44:51] TOOL SELECT
+session: 52a14e654a8d5cb5
+30 tools: issue_list, issue_get, issue_relations_get, issue_create, issue_update, insert_bulk_update, issue_relation_create, issue_relation_delete, issue_children_summary, issue_schedule_tree, version_list, version_get, version_overview, version_schedule_report, bug_statistics, enum_statuses, enum_trackers, enum_priorities, enum_categories, enum_custom_fields, user_list, user_get, run_script, spreadsheet_list_uploads, spreadsheet_list_sheets, spreadsheet_preview_sheet, spreadsheet_extract_rows, spreadsheet_export_report, issue_auto_schedule_preview, issue_auto_schedule_apply
+[2026-03-25 15:44:51] COMPACTION
+session: 5c2630333b881221
+trigger=manual_compaction removed_messages=7 saved_chars=15150
+[2026-03-25 15:44:51] TOOL SELECT
+session: 6aeb9b89d1054f00
+25 tools: issue_list, issue_get, issue_relations_get, issue_create, issue_update, insert_bulk_update, issue_relation_create, issue_relation_delete, issue_children_summary, issue_schedule_tree, version_list, version_get, version_overview, version_schedule_report, bug_statistics, enum_statuses, enum_trackers, enum_priorities, enum_categories, enum_custom_fields, user_list, user_get, run_script, issue_auto_schedule_preview, issue_auto_schedule_apply
+[2026-03-25 15:44:51] TOOL SELECT
+session: 43f93fe8f4a362a7
+25 tools: issue_list, issue_get, issue_relations_get, issue_create, issue_update, insert_bulk_update, issue_relation_create, issue_relation_delete, issue_children_summary, issue_schedule_tree, version_list, version_get, version_overview, version_schedule_report, bug_statistics, enum_statuses, enum_trackers, enum_priorities, enum_categories, enum_custom_fields, user_list, user_get, run_script, issue_auto_schedule_preview, issue_auto_schedule_apply
+[2026-03-25 15:44:51] TOOL SELECT
+session: 43f93fe8f4a362a7
+restoring 25 tools from mutation/evidence context before keyword selection
+[2026-03-25 15:44:51] WRITE GUARD
+session: a76735c1c4188ea7
+쓰기 도구 issue_update 실행을 보류했습니다. 이번 단계에서는 조회 결과를 먼저 확인해야 해서 쓰기 도구를 보류했습니다. 필요한 변경이 맞으면 다음 단계에서 다시 호출하세요.
+[2026-03-25 15:44:51] TOOL SELECT
+session: f24111f0a8380e79
+23 tools: issue_list, issue_get, issue_relations_get, issue_create, issue_update, insert_bulk_update, issue_relation_create, issue_relation_delete, issue_children_summary, issue_schedule_tree, version_list, version_get, version_overview, version_schedule_report, bug_statistics, enum_statuses, enum_trackers, enum_priorities, enum_categories, enum_custom_fields, user_list, user_get, run_script
+[2026-03-25 15:44:51] WRITE GUARD
+session: dc47e273c21ecf46
+쓰기 도구 issue_relation_create 실행을 보류했습니다. 쓰기 도구는 한 단계에서 하나씩만 실행합니다. 앞선 변경 결과를 확인한 뒤 다시 호출하세요.
+[2026-03-25 15:44:51] TOOL LOOP
+session: 16a43c06c278f491
+calls: 0/10 | remaining: 10 | iteration: 0
+[2026-03-25 15:44:51] --- STREAM STOP_REASON ---
+session: 16a43c06c278f491 | enum_call: #1 | PID: 2183607 | TID: 800
+reason=hard_cap
+
+[2026-03-25 15:44:51] TOOL BUDGET
+session: 9434df89b1cedffd
+도구 호출 한도(1)에 도달해 user_get 실행을 건너뛰었습니다. 현재까지 결과만으로 정리하세요.
+[2026-03-25 15:44:51] TOOL LOOP
+session: 03eb2d387687c239
+calls: 0/10 | remaining: 10 | iteration: 0
+[2026-03-25 15:44:51] PROVIDER FALLBACK
+session: ed63226c83ca5c03
+anthropic -> openai (retryable=true, write_calls=1, pending_verify=false)
+[2026-03-25 15:44:51] TOOL SELECT
+session: 24400319d9b2ce9a
+25 tools: issue_list, issue_get, issue_relations_get, issue_create, issue_update, insert_bulk_update, issue_relation_create, issue_relation_delete, issue_children_summary, issue_schedule_tree, version_list, version_get, version_overview, version_schedule_report, bug_statistics, enum_statuses, enum_trackers, enum_priorities, enum_categories, enum_custom_fields, user_list, user_get, run_script, issue_auto_schedule_preview, issue_auto_schedule_apply
+[2026-03-25 15:44:51] TOOL SELECT
+session: 92095c13ba3f8512
+25 tools: issue_list, issue_get, issue_relations_get, issue_create, issue_update, insert_bulk_update, issue_relation_create, issue_relation_delete, issue_children_summary, issue_schedule_tree, version_list, version_get, version_overview, version_schedule_report, bug_statistics, enum_statuses, enum_trackers, enum_priorities, enum_categories, enum_custom_fields, user_list, user_get, run_script, issue_auto_schedule_preview, issue_auto_schedule_apply
+[2026-03-25 15:44:51] LOOP GUARD
+session: 4878a8f2eb0e94d0
+issue_get no_progress warning count=4
+[2026-03-25 15:44:51] LOOP GUARD
+session: 4878a8f2eb0e94d0
+[loop_guard:no_progress] 같은 도구 호출이 같은 결과로 6회 반복되어 더 이상 실행하지 않았습니다. 현재 상태를 요약하고 다른 전략을 선택하세요.
+[2026-03-25 15:44:51] TOOL LOOP
+session: 7dd12b5d92732011
+calls: 0/10 | remaining: 10 | iteration: 0
+[2026-03-25 15:44:51] PROVIDER RETRY
+session: 9a16e2d3ec673f0e
+context overflow on openai, compacting and retrying
+[2026-03-25 15:44:51] COMPACTION
+session: 9a16e2d3ec673f0e
+trigger=context_overflow removed_messages=5 saved_chars=6426
+[2026-03-25 15:44:51] TOOL SELECT
+session: 9e11a5bf0c4f6b8d
+23 tools: issue_list, issue_get, issue_relations_get, issue_create, issue_update, insert_bulk_update, issue_relation_create, issue_relation_delete, issue_children_summary, issue_schedule_tree, version_list, version_get, version_overview, version_schedule_report, bug_statistics, enum_statuses, enum_trackers, enum_priorities, enum_categories, enum_custom_fields, user_list, user_get, run_script
+[2026-03-25 15:44:51] --- STREAM PHASE ---
+session: ebfc20fef1f35834 | enum_call: #1 | PID: 2183607 | TID: 800
+phase=write | tool=issue_update
+
+[2026-03-25 15:44:51] --- STREAM TOOL_CALL ---
+session: ebfc20fef1f35834 | enum_call: #2 | PID: 2183607 | TID: 800
+tool=issue_update | input={"id":123,"status_id":5}
+
+[2026-03-25 15:44:51] --- STREAM TOOL_RESULT ---
+session: ebfc20fef1f35834 | enum_call: #3 | PID: 2183607 | TID: 800
+tool=issue_update
+
+[2026-03-25 15:44:51] --- STREAM VERIFY ---
+session: ebfc20fef1f35834 | enum_call: #4 | PID: 2183607 | TID: 800
+status=pending | tool=issue_update | verify_with=["issue_get"]
+
+[2026-03-25 15:44:51] TOOL SELECT
+session: d45c08614993d7b7
+25 tools: issue_list, issue_get, issue_relations_get, issue_create, issue_update, insert_bulk_update, issue_relation_create, issue_relation_delete, issue_children_summary, issue_schedule_tree, version_list, version_get, version_overview, version_schedule_report, bug_statistics, enum_statuses, enum_trackers, enum_priorities, enum_categories, enum_custom_fields, user_list, user_get, run_script, issue_auto_schedule_preview, issue_auto_schedule_apply
+[2026-03-25 15:44:51] PROVIDER FALLBACK
+session: 757362276a870c13
+anthropic -> openai (retryable=true, write_calls=0, pending_verify=false)
+[2026-03-25 15:44:51] --- STREAM PHASE ---
+session: 757362276a870c13 | enum_call: #1 | PID: 2183607 | TID: 800
+phase=provider_fallback | from=anthropic | to=openai | reason=Anthropic API Error: 503
+
+[2026-03-25 15:48:57] TOOL SELECT
+session: 6533333f5932cb25
+25 tools: issue_list, issue_get, issue_relations_get, issue_create, issue_update, insert_bulk_update, issue_relation_create, issue_relation_delete, issue_children_summary, issue_schedule_tree, version_list, version_get, version_overview, version_schedule_report, bug_statistics, enum_statuses, enum_trackers, enum_priorities, enum_categories, enum_custom_fields, user_list, user_get, run_script, issue_auto_schedule_preview, issue_auto_schedule_apply
+[2026-03-25 15:48:57] TOOL SELECT
+session: 7945648c347c5279
+restoring 28 tools from mutation/evidence context before keyword selection
+[2026-03-25 15:48:57] TOOL LOOP
+session: 6ca86aefaa6d9b83
+calls: 0/10 | remaining: 10 | iteration: 0
+[2026-03-25 15:48:57] TOOL SELECT
+session: 00e22ce144534772
+25 tools: issue_list, issue_get, issue_relations_get, issue_create, issue_update, insert_bulk_update, issue_relation_create, issue_relation_delete, issue_children_summary, issue_schedule_tree, version_list, version_get, version_overview, version_schedule_report, bug_statistics, enum_statuses, enum_trackers, enum_priorities, enum_categories, enum_custom_fields, user_list, user_get, run_script, issue_auto_schedule_preview, issue_auto_schedule_apply
+[2026-03-25 15:48:57] TOOL SELECT
+session: fb509ce123d40f10
+25 tools: issue_list, issue_get, issue_relations_get, issue_create, issue_update, insert_bulk_update, issue_relation_create, issue_relation_delete, issue_children_summary, issue_schedule_tree, version_list, version_get, version_overview, version_schedule_report, bug_statistics, enum_statuses, enum_trackers, enum_priorities, enum_categories, enum_custom_fields, user_list, user_get, run_script, issue_auto_schedule_preview, issue_auto_schedule_apply
+[2026-03-25 15:48:57] TOOL BUDGET
+session: cb7c38b5a5db2ae0
+도구 호출 한도(1)에 도달해 user_get 실행을 건너뛰었습니다. 현재까지 결과만으로 정리하세요.
+[2026-03-25 15:48:57] PROVIDER FALLBACK
+session: 8833323288a07361
+anthropic -> openai (retryable=true, write_calls=1, pending_verify=false)
+[2026-03-25 15:48:57] PROVIDER FALLBACK
+session: b63987e15a385bf5
+anthropic -> openai (retryable=true, write_calls=0, pending_verify=false)
+[2026-03-25 15:48:57] --- STREAM PHASE ---
+session: b63987e15a385bf5 | enum_call: #1 | PID: 2184041 | TID: 780
+phase=provider_fallback | from=anthropic | to=openai | reason=Anthropic API Error: 503
+
+[2026-03-25 15:48:57] BUDGET TRIM
+session: 3ab25496d697185f
+3 → 2 messages (80000 char budget)
+[2026-03-25 15:48:57] WRITE GUARD
+session: bfdf0642f1a4e279
+쓰기 도구 issue_update 실행을 보류했습니다. 이번 단계에서는 조회 결과를 먼저 확인해야 해서 쓰기 도구를 보류했습니다. 필요한 변경이 맞으면 다음 단계에서 다시 호출하세요.
+[2026-03-25 15:48:57] LOOP GUARD
+session: 5a2a941b228f2988
+issue_get no_progress warning count=4
+[2026-03-25 15:48:57] LOOP GUARD
+session: 5a2a941b228f2988
+[loop_guard:no_progress] 같은 도구 호출이 같은 결과로 6회 반복되어 더 이상 실행하지 않았습니다. 현재 상태를 요약하고 다른 전략을 선택하세요.
+[2026-03-25 15:48:57] TOOL SELECT
+session: 2d40f152a38572e0
+30 tools: issue_list, issue_get, issue_relations_get, issue_create, issue_update, insert_bulk_update, issue_relation_create, issue_relation_delete, issue_children_summary, issue_schedule_tree, version_list, version_get, version_overview, version_schedule_report, bug_statistics, enum_statuses, enum_trackers, enum_priorities, enum_categories, enum_custom_fields, user_list, user_get, run_script, spreadsheet_list_uploads, spreadsheet_list_sheets, spreadsheet_preview_sheet, spreadsheet_extract_rows, spreadsheet_export_report, issue_auto_schedule_preview, issue_auto_schedule_apply
+[2026-03-25 15:48:57] --- STREAM PHASE ---
+session: 6424e4a07f562dc8 | enum_call: #1 | PID: 2184041 | TID: 780
+phase=write | tool=issue_update
+
+[2026-03-25 15:48:57] --- STREAM TOOL_CALL ---
+session: 6424e4a07f562dc8 | enum_call: #2 | PID: 2184041 | TID: 780
+tool=issue_update | input={"id":123,"status_id":5}
+
+[2026-03-25 15:48:57] --- STREAM TOOL_RESULT ---
+session: 6424e4a07f562dc8 | enum_call: #3 | PID: 2184041 | TID: 780
+tool=issue_update
+
+[2026-03-25 15:48:57] --- STREAM VERIFY ---
+session: 6424e4a07f562dc8 | enum_call: #4 | PID: 2184041 | TID: 780
+status=pending | tool=issue_update | verify_with=["issue_get"]
+
+[2026-03-25 15:48:57] WRITE GUARD
+session: 3edf54daa4b71a42
+쓰기 도구 issue_relation_create 실행을 보류했습니다. 쓰기 도구는 한 단계에서 하나씩만 실행합니다. 앞선 변경 결과를 확인한 뒤 다시 호출하세요.
+[2026-03-25 15:48:57] TOOL SELECT
+session: f0b959312300e090
+25 tools: issue_list, issue_get, issue_relations_get, issue_create, issue_update, insert_bulk_update, issue_relation_create, issue_relation_delete, issue_children_summary, issue_schedule_tree, version_list, version_get, version_overview, version_schedule_report, bug_statistics, enum_statuses, enum_trackers, enum_priorities, enum_categories, enum_custom_fields, user_list, user_get, run_script, issue_auto_schedule_preview, issue_auto_schedule_apply
+[2026-03-25 15:48:57] COMPACTION
+session: 5130db79295b3958
+trigger=manual_compaction removed_messages=7 saved_chars=15150
+[2026-03-25 15:48:57] TOOL SELECT
+session: 4eca8438e028ba5f
+27 tools: issue_list, issue_get, issue_relations_get, issue_create, issue_update, insert_bulk_update, issue_relation_create, issue_relation_delete, issue_children_summary, issue_schedule_tree, version_list, version_get, version_overview, version_schedule_report, bug_statistics, enum_statuses, enum_trackers, enum_priorities, enum_categories, enum_custom_fields, user_list, user_get, run_script, version_statistics, version_create, version_update, version_delete
+[2026-03-25 15:48:57] TOOL LOOP
+session: 4d7f45209045534d
+calls: 0/10 | remaining: 10 | iteration: 0
+[2026-03-25 15:48:57] --- STREAM STOP_REASON ---
+session: 4d7f45209045534d | enum_call: #1 | PID: 2184041 | TID: 780
+reason=hard_cap
+
+[2026-03-25 15:48:57] TOOL LOOP
+session: 4b5afeb5d692660c
+calls: 0/10 | remaining: 10 | iteration: 0
+[2026-03-25 15:48:57] TOOL SELECT
+session: ed8706c76f303890
+25 tools: issue_list, issue_get, issue_relations_get, issue_create, issue_update, insert_bulk_update, issue_relation_create, issue_relation_delete, issue_children_summary, issue_schedule_tree, version_list, version_get, version_overview, version_schedule_report, bug_statistics, enum_statuses, enum_trackers, enum_priorities, enum_categories, enum_custom_fields, user_list, user_get, run_script, issue_auto_schedule_preview, issue_auto_schedule_apply
+[2026-03-25 15:48:57] TOOL SELECT
+session: ed8706c76f303890
+restoring 25 tools from mutation/evidence context before keyword selection
+[2026-03-25 15:48:57] PROVIDER RETRY
+session: ea9b919fe3cd263a
+context overflow on openai, compacting and retrying
+[2026-03-25 15:48:57] COMPACTION
+session: ea9b919fe3cd263a
+trigger=context_overflow removed_messages=5 saved_chars=6426
+[2026-03-25 15:48:57] MUTATION VERIFY
+session: 05240029c4b34156
+쓰기 도구 issue_relation_create 실행을 보류했습니다. 앞선 변경 issue_update의 read-back 검증이 아직 끝나지 않았습니다. 대상: 123 다음 조회 도구로 검증하세요: issue_get.
+[2026-03-25 15:48:57] TOOL SELECT
+session: fd68d862b89de65d
+23 tools: issue_list, issue_get, issue_relations_get, issue_create, issue_update, insert_bulk_update, issue_relation_create, issue_relation_delete, issue_children_summary, issue_schedule_tree, version_list, version_get, version_overview, version_schedule_report, bug_statistics, enum_statuses, enum_trackers, enum_priorities, enum_categories, enum_custom_fields, user_list, user_get, run_script
+[2026-03-25 15:48:57] TOOL SELECT
+session: 073a4b4fa3dc9c98
+25 tools: issue_list, issue_get, issue_relations_get, issue_create, issue_update, insert_bulk_update, issue_relation_create, issue_relation_delete, issue_children_summary, issue_schedule_tree, version_list, version_get, version_overview, version_schedule_report, bug_statistics, enum_statuses, enum_trackers, enum_priorities, enum_categories, enum_custom_fields, user_list, user_get, run_script, issue_auto_schedule_preview, issue_auto_schedule_apply
+[2026-03-25 15:48:57] TOOL SELECT
+session: 6d15b320c0bf3924
+25 tools: issue_list, issue_get, issue_relations_get, issue_create, issue_update, insert_bulk_update, issue_relation_create, issue_relation_delete, issue_children_summary, issue_schedule_tree, version_list, version_get, version_overview, version_schedule_report, bug_statistics, enum_statuses, enum_trackers, enum_priorities, enum_categories, enum_custom_fields, user_list, user_get, run_script, issue_auto_schedule_preview, issue_auto_schedule_apply
+[2026-03-25 15:48:57] TOOL SELECT
+session: 9135cd200b86b9e0
+23 tools: issue_list, issue_get, issue_relations_get, issue_create, issue_update, insert_bulk_update, issue_relation_create, issue_relation_delete, issue_children_summary, issue_schedule_tree, version_list, version_get, version_overview, version_schedule_report, bug_statistics, enum_statuses, enum_trackers, enum_priorities, enum_categories, enum_custom_fields, user_list, user_get, run_script
+[2026-03-25 15:48:57] TOOL SELECT
+session: 84eae4e226c318dd
+restoring 23 tools from mutation/evidence context before keyword selection
+[2026-03-25 16:04:36] BUDGET TRIM
+session: 12501cb4cfeb92a7
+3 → 2 messages (80000 char budget)
+[2026-03-25 16:04:36] LOOP GUARD
+session: 30fa2a46e2f26d97
+issue_get no_progress warning count=4
+[2026-03-25 16:04:36] LOOP GUARD
+session: 30fa2a46e2f26d97
+[loop_guard:no_progress] 같은 도구 호출이 같은 결과로 6회 반복되어 더 이상 실행하지 않았습니다. 현재 상태를 요약하고 다른 전략을 선택하세요.
+[2026-03-25 16:04:36] TOOL SELECT
+session: e45d9806ed9cdca3
+restoring 23 tools from mutation/evidence context before keyword selection
+[2026-03-25 16:04:36] MUTATION VERIFY
+session: 6a4d6b62297ed14e
+쓰기 도구 issue_relation_create 실행을 보류했습니다. 앞선 변경 issue_update의 read-back 검증이 아직 끝나지 않았습니다. 대상: 123 다음 조회 도구로 검증하세요: issue_get.
+[2026-03-25 16:04:36] TOOL SELECT
+session: 71080a26efa8b175
+25 tools: issue_list, issue_get, issue_relations_get, issue_create, issue_update, insert_bulk_update, issue_relation_create, issue_relation_delete, issue_children_summary, issue_schedule_tree, version_list, version_get, version_overview, version_schedule_report, bug_statistics, enum_statuses, enum_trackers, enum_priorities, enum_categories, enum_custom_fields, user_list, user_get, run_script, issue_auto_schedule_preview, issue_auto_schedule_apply
+[2026-03-25 16:04:36] WRITE GUARD
+session: c3570bd9d4ce8098
+쓰기 도구 issue_relation_create 실행을 보류했습니다. 쓰기 도구는 한 단계에서 하나씩만 실행합니다. 앞선 변경 결과를 확인한 뒤 다시 호출하세요.
+[2026-03-25 16:04:36] --- STREAM PHASE ---
+session: df6048f20ea50eec | enum_call: #1 | PID: 2185935 | TID: 780
+phase=write | tool=issue_update
+
+[2026-03-25 16:04:36] --- STREAM TOOL_CALL ---
+session: df6048f20ea50eec | enum_call: #2 | PID: 2185935 | TID: 780
+tool=issue_update | input={"id":123,"status_id":5}
+
+[2026-03-25 16:04:36] --- STREAM TOOL_RESULT ---
+session: df6048f20ea50eec | enum_call: #3 | PID: 2185935 | TID: 780
+tool=issue_update
+
+[2026-03-25 16:04:36] --- STREAM VERIFY ---
+session: df6048f20ea50eec | enum_call: #4 | PID: 2185935 | TID: 780
+status=pending | tool=issue_update | verify_with=["issue_get"]
+
+[2026-03-25 16:04:36] TOOL SELECT
+session: 07cd94b17ed1a897
+25 tools: issue_list, issue_get, issue_relations_get, issue_create, issue_update, insert_bulk_update, issue_relation_create, issue_relation_delete, issue_children_summary, issue_schedule_tree, version_list, version_get, version_overview, version_schedule_report, bug_statistics, enum_statuses, enum_trackers, enum_priorities, enum_categories, enum_custom_fields, user_list, user_get, run_script, issue_auto_schedule_preview, issue_auto_schedule_apply
+[2026-03-25 16:04:36] TOOL SELECT
+session: 07cd94b17ed1a897
+restoring 25 tools from mutation/evidence context before keyword selection
+[2026-03-25 16:04:36] TOOL SELECT
+session: d74f96177e4e18da
+23 tools: issue_list, issue_get, issue_relations_get, issue_create, issue_update, insert_bulk_update, issue_relation_create, issue_relation_delete, issue_children_summary, issue_schedule_tree, version_list, version_get, version_overview, version_schedule_report, bug_statistics, enum_statuses, enum_trackers, enum_priorities, enum_categories, enum_custom_fields, user_list, user_get, run_script
+[2026-03-25 16:04:36] PROVIDER FALLBACK
+session: 4fbc6713cd75dc0c
+anthropic -> openai (retryable=true, write_calls=1, pending_verify=false)
+[2026-03-25 16:04:36] TOOL LOOP
+session: e378d753b710c065
+calls: 0/10 | remaining: 10 | iteration: 0
+[2026-03-25 16:04:36] TOOL SELECT
+session: b8780a4cb1865eb7
+restoring 28 tools from mutation/evidence context before keyword selection
+[2026-03-25 16:04:36] TOOL SELECT
+session: 5b206c26063ee1e5
+25 tools: issue_list, issue_get, issue_relations_get, issue_create, issue_update, insert_bulk_update, issue_relation_create, issue_relation_delete, issue_children_summary, issue_schedule_tree, version_list, version_get, version_overview, version_schedule_report, bug_statistics, enum_statuses, enum_trackers, enum_priorities, enum_categories, enum_custom_fields, user_list, user_get, run_script, issue_auto_schedule_preview, issue_auto_schedule_apply
+[2026-03-25 16:04:36] TOOL LOOP
+session: f706bc6340c96b99
+calls: 0/10 | remaining: 10 | iteration: 0
+[2026-03-25 16:04:36] TOOL SELECT
+session: 0434c4db773301d1
+25 tools: issue_list, issue_get, issue_relations_get, issue_create, issue_update, insert_bulk_update, issue_relation_create, issue_relation_delete, issue_children_summary, issue_schedule_tree, version_list, version_get, version_overview, version_schedule_report, bug_statistics, enum_statuses, enum_trackers, enum_priorities, enum_categories, enum_custom_fields, user_list, user_get, run_script, issue_auto_schedule_preview, issue_auto_schedule_apply
+[2026-03-25 16:04:36] TOOL BUDGET
+session: 97cff3e46040ed84
+도구 호출 한도(1)에 도달해 user_get 실행을 건너뛰었습니다. 현재까지 결과만으로 정리하세요.
+[2026-03-25 16:04:36] TOOL SELECT
+session: b0262e7bc826ff6a
+23 tools: issue_list, issue_get, issue_relations_get, issue_create, issue_update, insert_bulk_update, issue_relation_create, issue_relation_delete, issue_children_summary, issue_schedule_tree, version_list, version_get, version_overview, version_schedule_report, bug_statistics, enum_statuses, enum_trackers, enum_priorities, enum_categories, enum_custom_fields, user_list, user_get, run_script
+[2026-03-25 16:04:36] TOOL LOOP
+session: ea3825de9937cb1c
+calls: 0/10 | remaining: 10 | iteration: 0
+[2026-03-25 16:04:36] --- STREAM STOP_REASON ---
+session: ea3825de9937cb1c | enum_call: #1 | PID: 2185935 | TID: 780
+reason=hard_cap
+
+[2026-03-25 16:04:36] TOOL SELECT
+session: e38b36ceb1cd2c92
+27 tools: issue_list, issue_get, issue_relations_get, issue_create, issue_update, insert_bulk_update, issue_relation_create, issue_relation_delete, issue_children_summary, issue_schedule_tree, version_list, version_get, version_overview, version_schedule_report, bug_statistics, enum_statuses, enum_trackers, enum_priorities, enum_categories, enum_custom_fields, user_list, user_get, run_script, version_statistics, version_create, version_update, version_delete
+[2026-03-25 16:04:36] PROVIDER FALLBACK
+session: b0287022696195a5
+anthropic -> openai (retryable=true, write_calls=0, pending_verify=false)
+[2026-03-25 16:04:36] --- STREAM PHASE ---
+session: b0287022696195a5 | enum_call: #1 | PID: 2185935 | TID: 780
+phase=provider_fallback | from=anthropic | to=openai | reason=Anthropic API Error: 503
+
+[2026-03-25 16:04:36] TOOL SELECT
+session: e9f7d0b60930f6a8
+30 tools: issue_list, issue_get, issue_relations_get, issue_create, issue_update, insert_bulk_update, issue_relation_create, issue_relation_delete, issue_children_summary, issue_schedule_tree, version_list, version_get, version_overview, version_schedule_report, bug_statistics, enum_statuses, enum_trackers, enum_priorities, enum_categories, enum_custom_fields, user_list, user_get, run_script, spreadsheet_list_uploads, spreadsheet_list_sheets, spreadsheet_preview_sheet, spreadsheet_extract_rows, spreadsheet_export_report, issue_auto_schedule_preview, issue_auto_schedule_apply
+[2026-03-25 16:04:36] TOOL SELECT
+session: df4c170b291c9516
+25 tools: issue_list, issue_get, issue_relations_get, issue_create, issue_update, insert_bulk_update, issue_relation_create, issue_relation_delete, issue_children_summary, issue_schedule_tree, version_list, version_get, version_overview, version_schedule_report, bug_statistics, enum_statuses, enum_trackers, enum_priorities, enum_categories, enum_custom_fields, user_list, user_get, run_script, issue_auto_schedule_preview, issue_auto_schedule_apply
+[2026-03-25 16:04:36] TOOL SELECT
+session: e6a07d7b10d966fd
+25 tools: issue_list, issue_get, issue_relations_get, issue_create, issue_update, insert_bulk_update, issue_relation_create, issue_relation_delete, issue_children_summary, issue_schedule_tree, version_list, version_get, version_overview, version_schedule_report, bug_statistics, enum_statuses, enum_trackers, enum_priorities, enum_categories, enum_custom_fields, user_list, user_get, run_script, issue_auto_schedule_preview, issue_auto_schedule_apply
+[2026-03-25 16:04:36] PROVIDER RETRY
+session: ff03a7379b437521
+context overflow on openai, compacting and retrying
+[2026-03-25 16:04:36] COMPACTION
+session: ff03a7379b437521
+trigger=context_overflow removed_messages=5 saved_chars=6426
+[2026-03-25 16:04:36] WRITE GUARD
+session: 440b1c7400198a91
+쓰기 도구 issue_update 실행을 보류했습니다. 이번 단계에서는 조회 결과를 먼저 확인해야 해서 쓰기 도구를 보류했습니다. 필요한 변경이 맞으면 다음 단계에서 다시 호출하세요.
+[2026-03-25 16:04:36] COMPACTION
+session: acaf871da9684500
+trigger=manual_compaction removed_messages=7 saved_chars=15150
+[2026-03-25 16:04:36] TOOL SELECT
+session: 683748ee33e9bbcd
+25 tools: issue_list, issue_get, issue_relations_get, issue_create, issue_update, insert_bulk_update, issue_relation_create, issue_relation_delete, issue_children_summary, issue_schedule_tree, version_list, version_get, version_overview, version_schedule_report, bug_statistics, enum_statuses, enum_trackers, enum_priorities, enum_categories, enum_custom_fields, user_list, user_get, run_script, issue_auto_schedule_preview, issue_auto_schedule_apply

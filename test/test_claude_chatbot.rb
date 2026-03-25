@@ -25,11 +25,23 @@ class ClaudeChatbotTest < ActiveSupport::TestCase
     chatbot = build_chatbot
 
     chatbot.send(:select_tools_for_query, '123번 이슈를 홍길동에게 할당해줘')
-    tool_names = chatbot.send(:available_mcp_tools).map { |tool| tool[:name] }
+    tool_names = chatbot.send(:available_mcp_tools, force_all: true).map { |tool| tool[:name] }
 
     assert_includes tool_names, 'issue_update'
     assert_includes tool_names, 'user_list'
     assert_includes tool_names, 'user_get'
+  end
+
+  test "mutation requests start in read-only tool phase before evidence is gathered" do
+    chatbot = build_chatbot
+
+    chatbot.send(:select_tools_for_query, '123번 이슈를 홍길동에게 할당해줘')
+    tool_names = chatbot.send(:available_mcp_tools).map { |tool| tool[:name] }
+
+    assert_includes tool_names, 'issue_get'
+    assert_includes tool_names, 'user_get'
+    refute_includes tool_names, 'issue_update'
+    refute_includes tool_names, 'insert_bulk_update'
   end
 
   test "relation queries expose relation inspection tools" do
@@ -102,7 +114,7 @@ class ClaudeChatbotTest < ActiveSupport::TestCase
     chatbot = build_chatbot
 
     chatbot.send(:select_tools_for_query, '업로드한 report.xlsx 기준으로 이슈를 일괄 수정해줘')
-    tool_names = chatbot.send(:available_mcp_tools).map { |tool| tool[:name] }
+    tool_names = chatbot.send(:available_mcp_tools, force_all: true).map { |tool| tool[:name] }
 
     assert_includes tool_names, 'spreadsheet_list_uploads'
     assert_includes tool_names, 'spreadsheet_extract_rows'
@@ -114,7 +126,7 @@ class ClaudeChatbotTest < ActiveSupport::TestCase
     chatbot = build_chatbot
 
     chatbot.send(:select_tools_for_query, '부모 이슈 123의 하위 일감을 자동 일정 배치해줘')
-    tool_names = chatbot.send(:available_mcp_tools).map { |tool| tool[:name] }
+    tool_names = chatbot.send(:available_mcp_tools, force_all: true).map { |tool| tool[:name] }
 
     assert_includes tool_names, 'issue_schedule_tree'
     assert_includes tool_names, 'issue_auto_schedule_preview'
@@ -152,6 +164,15 @@ class ClaudeChatbotTest < ActiveSupport::TestCase
     assert_match(/미배정/, plan[:steps].first)
     assert_match(/버그/, plan[:steps].first)
     assert_match(/근거|원인/, plan[:steps].last)
+  end
+
+  test "generic issue search plan expands to child summary for parent issue progress questions" do
+    chatbot = build_chatbot
+
+    plan = chatbot.send(:build_execution_plan, '로그인 기능 부모 이슈 진행상황 알려줘')
+
+    assert_not_nil plan
+    assert_match(/issue_children_summary|issue_schedule_tree/, plan[:steps][1])
   end
 
   test "system message includes workspace uploads and reports when workspace context is set" do
@@ -220,8 +241,42 @@ class ClaudeChatbotTest < ActiveSupport::TestCase
     assert_equal 'restored', restored.instance_variable_get(:@selection_confidence)
 
     tool_names = restored.send(:available_mcp_tools).map { |tool| tool[:name] }
-    assert_includes tool_names, 'issue_update'
     assert_includes tool_names, 'issue_get'
+    refute_includes tool_names, 'issue_update'
+  end
+
+  test "pending verification exposes only verification-friendly read tools" do
+    chatbot = build_chatbot
+
+    chatbot.instance_variable_get(:@mutation_workflow).record_tool_result(
+      'issue_update',
+      { 'id' => 123, 'status_id' => 5 },
+      { 'id' => 123, 'status' => { 'id' => 5, 'name' => 'QA' } }
+    )
+    chatbot.send(:select_tools_for_query, '계속 진행해줘')
+
+    tool_names = chatbot.send(:available_mcp_tools).map { |tool| tool[:name] }
+
+    assert_includes tool_names, 'issue_get'
+    refute_includes tool_names, 'issue_update'
+    refute_includes tool_names, 'issue_relation_create'
+  end
+
+  test "implicit short follow-up inherits tool budget from prior context" do
+    chatbot = build_chatbot
+
+    chatbot.send(:prepare_tool_call_budget, '이슈 101번, 102번, 103번을 모두 QA로 변경해줘')
+    previous_budget = chatbot.send(:max_tool_calls)
+    chatbot.instance_variable_get(:@mutation_workflow).record_tool_result(
+      'issue_get',
+      { 'id' => 101 },
+      { 'id' => 101, 'status' => { 'id' => 1, 'name' => 'New' } }
+    )
+
+    chatbot.send(:reset_turn_state)
+    chatbot.send(:prepare_tool_call_budget, '마저 해줘')
+
+    assert_equal previous_budget, chatbot.send(:max_tool_calls)
   end
 
   test "plan_update stores normalized plan state and returns plan event payload" do
@@ -297,7 +352,7 @@ class ClaudeChatbotTest < ActiveSupport::TestCase
     chatbot = build_chatbot
 
     chatbot.send(:select_tools_for_query, '이슈 101번, 102번, 103번을 모두 QA로 변경해줘')
-    tool_names = chatbot.send(:available_mcp_tools).map { |tool| tool[:name] }
+    tool_names = chatbot.send(:available_mcp_tools, force_all: true).map { |tool| tool[:name] }
 
     assert_includes tool_names, 'insert_bulk_update'
   end
@@ -667,6 +722,35 @@ class ClaudeChatbotTest < ActiveSupport::TestCase
     assert_match(/read-back 검증/, retry_info[:instruction])
   end
 
+  test "guard retry requires child scope read after parent issue detail read for progress question" do
+    chatbot = build_chatbot
+
+    chatbot.instance_variable_get(:@mutation_workflow).record_tool_result(
+      'issue_get',
+      { 'id' => 123, 'include_children' => true },
+      {
+        'id' => 123,
+        'subject' => '로그인 기능',
+        'children' => [
+          { 'id' => 124, 'subject' => 'UI 작업' },
+          { 'id' => 125, 'subject' => 'API 작업' }
+        ]
+      }
+    )
+
+    response = {
+      'content' => [
+        { 'type' => 'text', 'text' => '부모 이슈는 진행 중이며 전반적으로 문제 없어 보입니다.' }
+      ]
+    }
+
+    retry_info = chatbot.send(:guard_retry_instruction, response, '부모 이슈 123 진행상황 알려줘')
+
+    assert_not_nil retry_info
+    assert_match(/issue_children_summary 또는 issue_schedule_tree/, retry_info[:instruction])
+    assert_equal({ type: 'any' }, retry_info[:tool_choice])
+  end
+
   test "handle_tool_calls blocks new write until previous mutation is verified" do
     chatbot = build_chatbot
     chatbot.instance_variable_get(:@mutation_workflow).record_tool_result(
@@ -758,7 +842,7 @@ class ClaudeChatbotTest < ActiveSupport::TestCase
     restored.send(:reset_metrics)
     restored.send(:select_tools_for_query, '계속 진행해줘')
 
-    tool_names = restored.send(:available_mcp_tools).map { |tool| tool[:name] }
+    tool_names = restored.send(:available_mcp_tools, force_all: true).map { |tool| tool[:name] }
 
     assert_includes tool_names, 'issue_get'
     assert_includes tool_names, 'issue_update'
