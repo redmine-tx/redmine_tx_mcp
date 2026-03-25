@@ -16,7 +16,11 @@ module RedmineTxMcp
     MAX_PERSISTED_MESSAGES = 60
     MAX_GUARD_RETRIES = 2
     DEFAULT_MAX_RUN_SECONDS = 180
-    DEFAULT_MAX_TOOL_CALL_DEPTH = 15
+    DEFAULT_MAX_TOOL_CALL_DEPTH = 25
+    COMPLEX_READ_BUDGET_RATIO = 1.2
+    RESEARCH_HEAVY_BUDGET_RATIO = 1.4
+    BULK_BUDGET_RATIO = 1.8
+    SPREADSHEET_BATCH_BUDGET_RATIO = 2.2
     MIN_COMPLEX_READ_TOOL_CALL_BUDGET = 18
     MIN_RESEARCH_HEAVY_TOOL_CALL_BUDGET = 22
     MIN_BULK_TOOL_CALL_BUDGET = 30
@@ -108,10 +112,16 @@ module RedmineTxMcp
       하위\s*일감|child(?:ren)?|부모\s*일감|parent
     /ix
 
+    AUTO_SCHEDULE_KEYWORDS = /
+      자동\s*(?:일정|배치|스케줄|스케줄링)|일정\s*자동|스케줄\s*자동|
+      auto[\s-]*schedule|auto[\s-]*assign\s+dates
+    /ix
+
     # Layer 4: Dynamic tool selection — profiles and keyword mapping
     TOOL_PROFILES = {
       version_progress: %w[
-        version_list version_get version_overview version_statistics issue_children_summary
+        version_list version_get version_overview version_statistics version_schedule_report
+        issue_children_summary issue_schedule_tree
         version_create version_update version_delete
       ],
       issue_search: %w[issue_list issue_get issue_relations_get],
@@ -125,6 +135,7 @@ module RedmineTxMcp
       bug_analysis: %w[bug_statistics issue_list issue_get version_list version_get],
       issue_management: %w[
         issue_get issue_relations_get issue_create issue_update insert_bulk_update
+        issue_auto_schedule_preview issue_auto_schedule_apply
         issue_relation_create issue_relation_delete
         enum_statuses enum_trackers enum_priorities enum_categories enum_custom_fields
         version_list version_get
@@ -166,17 +177,17 @@ module RedmineTxMcp
     SPREADSHEET_ENGLISH_REGEX = /\b(?:excel|xlsx|csv|tsv|spreadsheet|sheet|workbook|upload(?:ed)?|attach(?:ed|ment)?)\b/i
 
     BASE_TOOLS = %w[
-      issue_list issue_get issue_relations_get issue_create issue_update insert_bulk_update issue_relation_create issue_relation_delete issue_children_summary
-      version_list version_get version_overview bug_statistics
+      issue_list issue_get issue_relations_get issue_create issue_update insert_bulk_update issue_relation_create issue_relation_delete issue_children_summary issue_schedule_tree
+      version_list version_get version_overview version_schedule_report bug_statistics
       enum_statuses enum_trackers enum_priorities enum_categories enum_custom_fields
       user_list user_get
       run_script
     ].freeze
 
     READ_ONLY_TOOL_PATTERNS = [
-      /\Aissue_(list|get|relations_get|children_summary)\z/,
+      /\Aissue_(list|get|relations_get|children_summary|schedule_tree)\z/,
       /\Abug_statistics\z/,
-      /\Aversion_(list|get|overview|statistics)\z/,
+      /\Aversion_(list|get|overview|statistics|schedule_report)\z/,
       /\Aproject_(list|get|members)\z/,
       /\Auser_(list|get|projects|groups|roles)\z/,
       /\Aspreadsheet_(list_uploads|list_sheets|preview_sheet|extract_rows)\z/,
@@ -997,6 +1008,7 @@ module RedmineTxMcp
     def reset_turn_state
       @planner_active = false
       @tool_results_since_last_plan = 0
+      @previous_tool_call_budget = @tool_call_budget
       @tool_call_budget = nil
       @tool_call_history = Hash.new { |hash, key| hash[key] = { attempts: 0, successes: 0, errors: 0 } }
       @loop_guard = RedmineTxMcp::ChatbotLoopGuard.new
@@ -1334,6 +1346,14 @@ module RedmineTxMcp
         matched_tools.merge(%w[user_list user_get issue_update insert_bulk_update])
       end
 
+      if auto_schedule_intent?(msg_lower)
+        matched_profiles << :issue_management unless matched_profiles.include?(:issue_management)
+        matched_tools.merge(%w[
+          issue_get issue_children_summary issue_schedule_tree
+          issue_auto_schedule_preview issue_auto_schedule_apply
+        ])
+      end
+
       if schedule_or_version_intent?(msg_lower)
         matched_tools.merge(%w[version_list version_get issue_update insert_bulk_update])
       end
@@ -1414,6 +1434,8 @@ module RedmineTxMcp
       context = extract_plan_context(message, korean)
       plan = if spreadsheet_intent?(message) && mutation_intent?(message)
         build_spreadsheet_mutation_plan(context, korean)
+      elsif auto_schedule_intent?(message) && mutation_intent?(message)
+        build_auto_schedule_plan(context, korean)
       elsif spreadsheet_intent?(message)
         build_spreadsheet_read_plan(context, korean)
       elsif relation_intent?(message) && mutation_intent?(message)
@@ -1443,6 +1465,24 @@ module RedmineTxMcp
 
     def localized_plan(korean, ko_steps, en_steps)
       korean ? ko_steps : en_steps
+    end
+
+    def build_auto_schedule_plan(context, korean)
+      target = target_scope_phrase(context, korean, fallback: korean ? '대상 상위 이슈' : 'the target parent issue')
+
+      localized_plan(
+        korean,
+        [
+          "#{target}를 확인하고 issue_schedule_tree 또는 issue_children_summary로 현재 하위 일정 상태를 봅니다.",
+          "issue_auto_schedule_preview로 자동 배치안을 만들고, 누락된 추정시간이 있으면 먼저 정리합니다.",
+          "미리보기 결과가 맞으면 issue_auto_schedule_apply를 실행한 뒤 issue_get 또는 issue_schedule_tree로 반영 결과를 검증합니다."
+        ],
+        [
+          "Identify #{target} and inspect the current child schedule with issue_schedule_tree or issue_children_summary.",
+          "Generate a proposed schedule with issue_auto_schedule_preview, and resolve any missing estimates first.",
+          "If the preview looks correct, apply it with issue_auto_schedule_apply and verify the saved dates with issue_get or issue_schedule_tree."
+        ]
+      )
     end
 
     def build_spreadsheet_mutation_plan(context, korean)
@@ -1864,6 +1904,10 @@ module RedmineTxMcp
       PROFILE_KEYWORDS[:bug_analysis].any? { |kw| message.to_s.downcase.include?(kw) }
     end
 
+    def auto_schedule_intent?(message)
+      message.to_s.match?(AUTO_SCHEDULE_KEYWORDS)
+    end
+
     def version_progress_intent?(message)
       PROFILE_KEYWORDS[:version_progress].any? { |kw| message.to_s.downcase.include?(kw) }
     end
@@ -1887,6 +1931,7 @@ module RedmineTxMcp
     def mutation_intent?(message)
       msg = message.to_s.downcase
       PROFILE_KEYWORDS[:issue_management].any? { |kw| intent_keyword_match?(msg, kw) } ||
+        auto_schedule_intent?(msg) ||
         msg.match?(/(?:^|\s)#?\d+\s*(?:을|를)?\s*(?:qa|review|done|close|closed|reopen)/i)
     end
 
@@ -2133,19 +2178,36 @@ module RedmineTxMcp
       base = configured_max_tool_calls
       complex_read_floor = complex_read_tool_call_floor(user_message)
       batch_floor = batch_tool_call_floor(user_message)
+      follow_up_floor = follow_up_budget_floor(user_message)
 
-      @tool_call_budget = [base, complex_read_floor, batch_floor].max
+      @tool_call_budget = [base, complex_read_floor, batch_floor, follow_up_floor].max
+    end
+
+    def follow_up_budget_floor(user_message)
+      return 0 unless @previous_tool_call_budget&.positive?
+      return 0 unless follow_up_continuation?(user_message)
+
+      @previous_tool_call_budget
+    end
+
+    def follow_up_continuation?(user_message)
+      RedmineTxMcp::ChatbotMutationWorkflow.follow_up_reference?(user_message)
     end
 
     def complex_read_tool_call_floor(message)
       text = message.to_s
+      base = configured_max_tool_calls
       return 0 if mutation_intent?(text)
-      return MIN_RESEARCH_HEAVY_TOOL_CALL_BUDGET if research_heavy_request?(text)
-      return MIN_COMPLEX_READ_TOOL_CALL_BUDGET if bug_analysis_intent?(text) || version_progress_intent?(text)
+      if research_heavy_request?(text)
+        return [(base * RESEARCH_HEAVY_BUDGET_RATIO).ceil, MIN_RESEARCH_HEAVY_TOOL_CALL_BUDGET].max
+      end
+      if bug_analysis_intent?(text) || version_progress_intent?(text)
+        return [(base * COMPLEX_READ_BUDGET_RATIO).ceil, MIN_COMPLEX_READ_TOOL_CALL_BUDGET].max
+      end
 
       if (factual_query_intent?(text) || analysis_intent?(text)) &&
          (analysis_intent?(text) || text.length >= LONG_COMPLEX_REQUEST_CHARS)
-        return MIN_COMPLEX_READ_TOOL_CALL_BUDGET
+        return [(base * COMPLEX_READ_BUDGET_RATIO).ceil, MIN_COMPLEX_READ_TOOL_CALL_BUDGET].max
       end
 
       0
@@ -2153,13 +2215,16 @@ module RedmineTxMcp
 
     def batch_tool_call_floor(message)
       text = message.to_s
+      base = configured_max_tool_calls
       issue_bonus = bulk_issue_budget_bonus(text)
 
       if spreadsheet_intent?(text) && (bulk_operation_intent?(text) || mutation_intent?(text))
-        return MIN_SPREADSHEET_BATCH_TOOL_CALL_BUDGET + issue_bonus
+        return [(base * SPREADSHEET_BATCH_BUDGET_RATIO).ceil, MIN_SPREADSHEET_BATCH_TOOL_CALL_BUDGET].max + issue_bonus
       end
 
-      return MIN_BULK_TOOL_CALL_BUDGET + issue_bonus if bulk_operation_intent?(text)
+      if bulk_operation_intent?(text)
+        return [(base * BULK_BUDGET_RATIO).ceil, MIN_BULK_TOOL_CALL_BUDGET].max + issue_bonus
+      end
 
       0
     end

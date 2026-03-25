@@ -180,9 +180,13 @@ module RedmineTxMcp
           tool('issue_get', properties: { id: { type: 'integer' } }),
           tool('issue_relations_get', properties: { issue_id: { type: 'integer' } }),
           tool('issue_children_summary', properties: { parent_id: { type: 'integer' } }),
+          tool('issue_schedule_tree', properties: { parent_id: { type: 'integer' } }),
           tool('issue_create', properties: { project_id: { type: 'integer' }, subject: { type: 'string' } }),
           tool('issue_update', properties: { id: { type: 'integer' }, status_id: { type: 'integer' } }),
           tool('insert_bulk_update', properties: { issue_ids: { type: 'array' } }),
+          tool('issue_auto_schedule_preview', properties: { parent_issue_id: { type: 'integer' } }),
+          tool('issue_auto_schedule_apply', properties: { preview_token: { type: 'string' } }),
+          tool('version_schedule_report', properties: { version_id: { type: 'integer' } }),
           tool('issue_relation_create', properties: { issue_id: { type: 'integer' }, related_issue_id: { type: 'integer' } }),
           tool('issue_relation_delete', properties: { id: { type: 'integer' } })
         ]

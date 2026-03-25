@@ -42,6 +42,7 @@ module RedmineTxMcp
                   due_date_to: { type: "string", description: "Due date on or before this date. Accepts YYYY-MM-DD, YYYY/MM/DD, YYYY.MM.DD, today/yesterday/tomorrow, 오늘/어제/내일." },
                   has_no_due_date: { type: "boolean", description: "true=only issues without a due date, false=only issues with a due date" },
                   sort: { type: "string", description: "Sort order. Examples: 'due_date:asc', 'priority:desc', 'updated_on:desc', 'id:asc'. Default: 'id:asc'" },
+                  include_custom_fields: { type: "boolean", description: "Include custom field values in each list item. Adds a custom_fields array to every row. Use when custom field comparison is needed without fetching each issue individually.", default: false },
                   fetch_all: { type: "boolean", description: "Return a capped full list in one response. Prefer this when the user asks for all/전체/전부 issues and the result set is manageable." },
                   page: { type: "integer", description: "Page number", default: 1 },
                   per_page: { type: "integer", description: "Items per page (max 100)", default: 25 }
@@ -50,15 +51,15 @@ module RedmineTxMcp
             },
             {
               name: "issue_get",
-              description: "Get detailed information for one specific issue. Unlike issue_list, this returns the issue description, project/category, parent issue, and current relations by default. Use this after issue_list when you need to inspect one issue deeply.",
+              description: "Get detailed information for one or more issues. Unlike issue_list, this returns the issue description, project/category, parent issue, custom fields, and current relations. Accepts a single ID or an array of IDs (max 25). Use the array form to batch-fetch multiple issues in one call instead of calling issue_get repeatedly.",
               inputSchema: {
                 type: "object",
                 properties: {
-                  id: { type: "integer", description: "Issue ID" },
-                  include_journals: { type: "boolean", description: "Include change history and comments", default: false },
-                  include_children: { type: "boolean", description: "Include direct child issues summary", default: false }
-                },
-                required: ["id"]
+                  id: { type: "integer", description: "Single issue ID (use this OR ids, not both)" },
+                  ids: { type: "array", items: { type: "integer" }, description: "Array of issue IDs to fetch in bulk (max 25). Use this OR id, not both." },
+                  include_journals: { type: "boolean", description: "Include change history and comments (single issue only)", default: false },
+                  include_children: { type: "boolean", description: "Include direct child issues summary (single issue only)", default: false }
+                }
               }
             },
             {
@@ -238,6 +239,34 @@ module RedmineTxMcp
               }
             },
             {
+              name: "issue_schedule_tree",
+              description: "Get a parent issue with all children's full schedule details and custom fields in one call. " \
+                "Unlike issue_children_summary (aggregate stats), this returns each child's individual dates, hours, custom fields, and auto-detects schedule gaps. " \
+                "Accepts a single parent_id or an array of parent_ids (max 10). " \
+                "Use this when analyzing whether child schedules align with parent/version deadlines, or when comparing custom field values across children.",
+              inputSchema: {
+                type: "object",
+                properties: {
+                  parent_id: { type: "integer", description: "Single parent issue ID (use this OR parent_ids)" },
+                  parent_ids: { type: "array", items: { type: "integer" }, description: "Array of parent issue IDs (max 10). Use this OR parent_id." }
+                }
+              }
+            },
+            {
+              name: "version_schedule_report",
+              description: "Get a schedule-focused report for a version/milestone. " \
+                "For each parent issue in the version, returns: parent details with custom fields, child date range, and schedule alerts (missing dates, overdue, dates past version deadline). " \
+                "Unlike version_overview (progress/status focus), this is optimized for schedule and date analysis. " \
+                "Use this when checking if all issues in a version have proper dates, or finding schedule conflicts.",
+              inputSchema: {
+                type: "object",
+                properties: {
+                  version_id: { type: "integer", description: "Version ID" }
+                },
+                required: ["version_id"]
+              }
+            },
+            {
               name: "bug_statistics",
               description: "Get an aggregate bug dashboard for a project. Returns: " \
                 "summary (total/resolved/unresolved/resolution_rate_percent 0-100), " \
@@ -284,6 +313,10 @@ module RedmineTxMcp
             delete_issue_relation(arguments)
           when "issue_children_summary"
             children_summary(arguments, chatbot: chatbot)
+          when "issue_schedule_tree"
+            schedule_tree(arguments, chatbot: chatbot)
+          when "version_schedule_report"
+            version_schedule_report(arguments, chatbot: chatbot)
           when "issue_auto_schedule_preview"
             auto_schedule_preview(arguments)
           when "issue_auto_schedule_apply"
@@ -378,7 +411,18 @@ module RedmineTxMcp
         # ─── Get ────────────────────────────────────────────
 
         def get_issue(args, chatbot: false)
-          issue = Issue.visible.find(args['id'])
+          ids = args['ids'] || (args['id'] ? [args['id']] : nil)
+          return { error: "Either id or ids is required" } unless ids&.any?
+
+          if ids.size == 1
+            get_single_issue(ids.first, args, chatbot: chatbot)
+          else
+            get_bulk_issues(ids.first(25), chatbot: chatbot)
+          end
+        end
+
+        def get_single_issue(id, args, chatbot: false)
+          issue = Issue.visible.find(id)
           result = format_issue_details(issue, chatbot: chatbot)
 
           if args['include_journals']
@@ -403,6 +447,24 @@ module RedmineTxMcp
           result
         rescue ActiveRecord::RecordNotFound
           { error: "Issue not found" }
+        end
+
+        def get_bulk_issues(ids, chatbot: false)
+          issues = Issue.visible.where(id: ids)
+                        .includes(:project, :tracker, :status, :priority,
+                                  :author, :assigned_to, :category, :fixed_version)
+                        .to_a
+
+          found_ids = issues.map(&:id)
+          missing_ids = ids - found_ids
+
+          results = issues.sort_by { |i| ids.index(i.id) || i.id }.map do |issue|
+            format_issue_details(issue, chatbot: chatbot)
+          end
+
+          response = { issues: results, total: results.size }
+          response[:missing_ids] = missing_ids if missing_ids.any?
+          response
         end
 
         def get_issue_relations(args, chatbot: false)
@@ -793,6 +855,169 @@ module RedmineTxMcp
           slim_children_summary(data)
         end
 
+        # ─── Schedule Tree ──────────────────────────────────
+
+        def schedule_tree(args, chatbot: false)
+          ids = args['parent_ids'] || (args['parent_id'] ? [args['parent_id']] : nil)
+          return { error: "Either parent_id or parent_ids is required" } unless ids&.any?
+
+          ids = ids.first(10)
+          trees = ids.map { |pid| build_schedule_tree(pid, chatbot: chatbot) }
+
+          if trees.size == 1
+            trees.first
+          else
+            { trees: trees, total: trees.size }
+          end
+        end
+
+        def build_schedule_tree(parent_id, chatbot: false)
+          parent = Issue.visible.find(parent_id)
+          version_due = parent.fixed_version&.effective_date
+          children = parent.children.visible
+                           .includes(:status, :tracker, :priority, :assigned_to, :fixed_version)
+                           .order(:id)
+                           .to_a
+
+          parent_data = {
+            id: parent.id,
+            subject: parent.subject,
+            tracker: parent.tracker.name,
+            status: parent.status.name,
+            assigned_to: parent.assigned_to&.name,
+            fixed_version: parent.fixed_version ? { id: parent.fixed_version.id, name: parent.fixed_version.name, due_date: version_due&.iso8601 } : nil,
+            start_date: parent.start_date&.iso8601,
+            due_date: parent.due_date&.iso8601,
+            estimated_hours: parent.estimated_hours,
+            done_ratio: parent.done_ratio,
+            custom_fields: format_custom_field_values(parent)
+          }
+
+          children_data = children.map do |child|
+            {
+              id: child.id,
+              subject: child.subject,
+              tracker: child.tracker.name,
+              status: child.status.name,
+              is_closed: child.status.is_closed?,
+              stage: child.status.respond_to?(:stage_name) ? child.status.stage_name : nil,
+              assigned_to: child.assigned_to&.name,
+              start_date: child.start_date&.iso8601,
+              due_date: child.due_date&.iso8601,
+              estimated_hours: child.estimated_hours,
+              done_ratio: child.done_ratio,
+              custom_fields: format_custom_field_values(child)
+            }.merge(issue_tip_fields(child))
+          end
+
+          alerts = detect_schedule_alerts(parent, children, version_due)
+
+          open_children = children_data.reject { |c| c[:is_closed] }
+          {
+            parent: parent_data,
+            children: open_children,
+            closed_count: children_data.size - open_children.size,
+            schedule_alerts: alerts
+          }
+        rescue ActiveRecord::RecordNotFound
+          { error: "Parent issue #{parent_id} not found" }
+        end
+
+        def detect_schedule_alerts(parent, children, version_due)
+          today = Date.today
+          alerts = []
+
+          children.each do |child|
+            next if child.status.is_closed?
+
+            if child.due_date.nil?
+              alerts << { child_id: child.id, subject: child.subject, type: 'missing_due_date' }
+            elsif child.due_date < today
+              alerts << { child_id: child.id, subject: child.subject, type: 'overdue', days: (today - child.due_date).to_i }
+            elsif version_due && child.due_date > version_due
+              alerts << { child_id: child.id, subject: child.subject, type: 'past_version_deadline', version_due: version_due.iso8601, child_due: child.due_date.iso8601 }
+            end
+
+            if child.start_date.nil? && child.due_date.present?
+              alerts << { child_id: child.id, subject: child.subject, type: 'missing_start_date' }
+            end
+
+            if child.assigned_to.nil?
+              alerts << { child_id: child.id, subject: child.subject, type: 'unassigned' }
+            end
+          end
+
+          alerts
+        end
+
+        # ─── Version Schedule Report ───────────────────────
+
+        def version_schedule_report(args, chatbot: false)
+          version = Version.visible.find(args['version_id'])
+          version_due = version.effective_date
+
+          parents = version.fixed_issues.visible
+                           .where(parent_id: nil)
+                           .includes(:status, :tracker, :priority, :assigned_to, :fixed_version)
+                           .order(:id)
+                           .to_a
+
+          parent_trees = parents.reject { |p| p.status.is_closed? }.map do |parent|
+            children = parent.children.visible
+                             .includes(:status, :tracker, :assigned_to)
+                             .to_a
+            open_children = children.reject { |c| c.status.is_closed? }
+
+            alerts = detect_schedule_alerts(parent, children, version_due)
+
+            start_dates = open_children.filter_map(&:start_date)
+            due_dates = open_children.filter_map(&:due_date)
+
+            {
+              parent: {
+                id: parent.id,
+                subject: parent.subject,
+                tracker: parent.tracker.name,
+                status: parent.status.name,
+                assigned_to: parent.assigned_to&.name,
+                start_date: parent.start_date&.iso8601,
+                due_date: parent.due_date&.iso8601,
+                done_ratio: parent.done_ratio,
+                custom_fields: format_custom_field_values(parent)
+              },
+              children_count: open_children.size,
+              date_range: {
+                earliest_start: start_dates.min&.iso8601,
+                latest_due: due_dates.max&.iso8601
+              },
+              alert_count: alerts.size,
+              alerts: alerts.first(10)
+            }
+          end
+
+          at_risk = parent_trees.select { |t| t[:alert_count] > 0 }
+
+          {
+            version: {
+              id: version.id, name: version.name,
+              status: version.status,
+              due_date: version_due&.iso8601,
+              total_issues: version.fixed_issues.visible.count
+            },
+            parent_count: parent_trees.size,
+            parents_with_alerts: at_risk.size,
+            parent_trees: parent_trees,
+            summary: {
+              total_alerts: parent_trees.sum { |t| t[:alert_count] },
+              missing_due_dates: parent_trees.sum { |t| t[:alerts].count { |a| a[:type] == 'missing_due_date' } },
+              overdue: parent_trees.sum { |t| t[:alerts].count { |a| a[:type] == 'overdue' } },
+              past_version_deadline: parent_trees.sum { |t| t[:alerts].count { |a| a[:type] == 'past_version_deadline' } }
+            }
+          }
+        rescue ActiveRecord::RecordNotFound
+          { error: "Version not found" }
+        end
+
         # ─── Version Overview ───────────────────────────────
 
         def version_overview(args, chatbot: false)
@@ -804,7 +1029,7 @@ module RedmineTxMcp
         # ─── Bug Statistics ──────────────────────────────────
 
         def bug_statistics(args)
-          project = Project.find(args['project_id'])
+          project = Project.visible.find(args['project_id'])
           days = (args['days'] || 12).to_i.clamp(1, 90)
 
           # Resolve bug tracker IDs
@@ -825,16 +1050,20 @@ module RedmineTxMcp
           # Optional version filter
           version = nil
           if args['version_id']
-            version = Version.find(args['version_id'])
+            version = Version.visible.find(args['version_id'])
           end
 
-          # Base scope: bugs, not discarded.
-          # When version is given, use version.fixed_issues to include all
-          # subprojects sharing this version (matches Redmine milestone page).
+          version_project_scope_ids = [project.id]
+          if version && project.respond_to?(:descendants)
+            version_project_scope_ids.concat(project.descendants.pluck(:id))
+          end
+          version_project_scope_ids = version_project_scope_ids.compact.uniq
+
+          # Base scope: bugs, not discarded, and never outside the requested project boundary.
           scope = if version
-                    version.fixed_issues.where(tracker_id: bug_tracker_ids)
+                    version.fixed_issues.visible.where(project_id: version_project_scope_ids, tracker_id: bug_tracker_ids)
                   else
-                    Issue.where(project_id: project.id, tracker_id: bug_tracker_ids)
+                    Issue.visible.where(project_id: project.id, tracker_id: bug_tracker_ids)
                   end
           scope = scope.where.not(status_id: discarded_ids) if discarded_ids.any?
 
@@ -955,8 +1184,9 @@ module RedmineTxMcp
           total_pages = (total.to_f / per_page).ceil
           has_more = total > offset + items.size
 
+          include_cfs = chatbot && truthy_argument?(args['include_custom_fields'])
           result = {
-            items: items.map { |issue| chatbot ? format_issue_list_item(issue) : format_issue_details(issue) },
+            items: items.map { |issue| chatbot ? format_issue_list_item(issue, include_custom_fields: include_cfs) : format_issue_details(issue) },
             pagination: {
               page: page,
               per_page: per_page,
@@ -1157,10 +1387,10 @@ module RedmineTxMcp
           payload
         end
 
-        def format_issue_list_item(issue)
+        def format_issue_list_item(issue, include_custom_fields: false)
           relations = visible_issue_relations(issue)
 
-          {
+          result = {
             detail_level: 'summary',
             id: issue.id,
             subject: issue.subject,
@@ -1186,6 +1416,9 @@ module RedmineTxMcp
             done_ratio: issue.done_ratio,
             worker: issue.respond_to?(:worker) && issue.worker ? issue.worker.name : nil,
           }.merge(issue_tip_fields(issue))
+
+          result[:custom_fields] = format_custom_field_values(issue) if include_custom_fields
+          result
         end
 
         def format_issue_relation(relation, issue)

@@ -110,6 +110,28 @@ class ClaudeChatbotTest < ActiveSupport::TestCase
     assert_includes tool_names, 'insert_bulk_update'
   end
 
+  test "auto schedule requests expose preview and apply tools" do
+    chatbot = build_chatbot
+
+    chatbot.send(:select_tools_for_query, '부모 이슈 123의 하위 일감을 자동 일정 배치해줘')
+    tool_names = chatbot.send(:available_mcp_tools).map { |tool| tool[:name] }
+
+    assert_includes tool_names, 'issue_schedule_tree'
+    assert_includes tool_names, 'issue_auto_schedule_preview'
+    assert_includes tool_names, 'issue_auto_schedule_apply'
+  end
+
+  test "auto schedule requests produce auto schedule plan" do
+    chatbot = build_chatbot
+
+    plan = chatbot.send(:build_execution_plan, '부모 이슈 123의 하위 일감을 자동 일정 배치해줘')
+
+    assert_not_nil plan
+    assert_match(/issue_schedule_tree|issue_children_summary/, plan[:steps].first)
+    assert_match(/issue_auto_schedule_preview/, plan[:steps][1])
+    assert_match(/issue_auto_schedule_apply/, plan[:steps][2])
+  end
+
   test "spreadsheet requests produce spreadsheet-aware plan" do
     chatbot = build_chatbot
 
@@ -912,6 +934,40 @@ class ClaudeChatbotTest < ActiveSupport::TestCase
     assert_equal false, workflow.send(:comparable_values?, 0, nil)
     assert_equal false, workflow.send(:comparable_values?, 0, '')
     assert_equal true, workflow.send(:comparable_values?, 0, '0')
+  end
+
+  test "mutation workflow verifies auto schedule apply with bulk issue_get readback" do
+    workflow = RedmineTxMcp::ChatbotMutationWorkflow.new
+
+    note = workflow.record_tool_result(
+      'issue_auto_schedule_apply',
+      { 'preview_token' => 'preview-token' },
+      {
+        'updated_issue_ids' => [101, 102],
+        'issues' => [
+          { 'id' => 101, 'start_date' => '2026-03-26', 'due_date' => '2026-03-27' },
+          { 'id' => 102, 'start_date' => '2026-03-28', 'due_date' => '2026-03-29' }
+        ]
+      }
+    )
+
+    assert_match(/read-back 검증이 필요합니다/, note)
+    assert_equal true, workflow.pending_verification?
+
+    verify_note = workflow.record_tool_result(
+      'issue_get',
+      { 'ids' => [101, 102] },
+      {
+        'issues' => [
+          { 'id' => 101, 'start_date' => '2026-03-26', 'due_date' => '2026-03-27' },
+          { 'id' => 102, 'start_date' => '2026-03-28', 'due_date' => '2026-03-29' }
+        ],
+        'total' => 2
+      }
+    )
+
+    assert_equal false, workflow.pending_verification?
+    assert_match(/자동 일정 적용 read-back 검증이 통과했습니다/, verify_note)
   end
 
   test "handle_tool_calls emits phase and verify events for mutation workflow" do

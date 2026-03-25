@@ -19,9 +19,9 @@ module RedmineTxMcp
     ].freeze
 
     READ_ONLY_PATTERNS = [
-      /\Aissue_(list|get|relations_get|children_summary|auto_schedule_preview)\z/,
+      /\Aissue_(list|get|relations_get|children_summary|schedule_tree|auto_schedule_preview)\z/,
       /\Abug_statistics\z/,
-      /\Aversion_(list|get|overview|statistics)\z/,
+      /\Aversion_(list|get|overview|statistics|schedule_report)\z/,
       /\Aproject_(list|get|members)\z/,
       /\Auser_(list|get|projects|groups|roles)\z/,
       /\Aspreadsheet_(list_uploads|list_sheets|preview_sheet|extract_rows)\z/,
@@ -34,6 +34,7 @@ module RedmineTxMcp
       'issue_get' => { read_only: true, entity_type: 'issue', idempotent: true },
       'issue_relations_get' => { read_only: true, entity_type: 'issue_relation', idempotent: true },
       'issue_children_summary' => { read_only: true, entity_type: 'issue', idempotent: true },
+      'issue_schedule_tree' => { read_only: true, entity_type: 'issue', idempotent: true },
       'issue_create' => { side_effecting: true, verify_with: %w[issue_get], entity_type: 'issue' },
       'issue_update' => { side_effecting: true, verify_with: %w[issue_get], entity_type: 'issue' },
       'insert_bulk_update' => { side_effecting: true, verify_with: %w[issue_get issue_list], entity_type: 'issue' },
@@ -41,10 +42,11 @@ module RedmineTxMcp
       'issue_relation_create' => { side_effecting: true, verify_with: %w[issue_relations_get issue_get], entity_type: 'issue_relation' },
       'issue_relation_delete' => { side_effecting: true, verify_with: %w[issue_relations_get issue_get], entity_type: 'issue_relation' },
       'issue_auto_schedule_preview' => { read_only: true, entity_type: 'issue', idempotent: true },
-      'issue_auto_schedule_apply' => { side_effecting: true, verify_with: %w[issue_get issue_children_summary], entity_type: 'issue' },
+      'issue_auto_schedule_apply' => { side_effecting: true, verify_with: %w[issue_get issue_schedule_tree], entity_type: 'issue' },
       'version_list' => { read_only: true, entity_type: 'version', idempotent: true },
       'version_get' => { read_only: true, entity_type: 'version', idempotent: true },
       'version_overview' => { read_only: true, entity_type: 'version', idempotent: true },
+      'version_schedule_report' => { read_only: true, entity_type: 'version', idempotent: true },
       'version_create' => { side_effecting: true, verify_with: %w[version_get], entity_type: 'version' },
       'version_update' => { side_effecting: true, verify_with: %w[version_get], entity_type: 'version' },
       'version_delete' => { side_effecting: true, confirm_required: true, entity_type: 'version' },
@@ -98,13 +100,16 @@ module RedmineTxMcp
       tool = tool_name.to_s
       explicit = EXPLICIT_TOOL_METADATA[tool] || {}
       inferred = inferred_metadata_for(tool)
+      read_only = explicit.key?(:read_only) ? explicit[:read_only] : inferred[:read_only]
+      side_effecting = explicit.key?(:side_effecting) ? explicit[:side_effecting] : inferred[:side_effecting]
+      verify_with = Array(explicit.key?(:verify_with) ? explicit[:verify_with] : inferred[:verify_with]).map(&:to_s).uniq
       {
-        read_only: explicit.key?(:read_only) ? explicit[:read_only] : inferred[:read_only],
-        side_effecting: explicit.key?(:side_effecting) ? explicit[:side_effecting] : inferred[:side_effecting],
+        read_only: read_only,
+        side_effecting: side_effecting,
         idempotent: explicit.key?(:idempotent) ? explicit[:idempotent] : inferred[:idempotent],
         confirm_required: explicit.key?(:confirm_required) ? explicit[:confirm_required] : inferred[:confirm_required],
-        verify_with: Array(explicit.key?(:verify_with) ? explicit[:verify_with] : inferred[:verify_with]).map(&:to_s).uniq,
-        verification_required: explicit.key?(:verification_required) ? explicit[:verification_required] : inferred[:verification_required],
+        verify_with: verify_with,
+        verification_required: explicit.key?(:verification_required) ? explicit[:verification_required] : (side_effecting && verify_with.any?),
         entity_type: (explicit[:entity_type] || inferred[:entity_type]).to_s
       }
     end
@@ -496,6 +501,8 @@ module RedmineTxMcp
         verify_single_issue_readback(tool_name, result, pending)
       when 'insert_bulk_update'
         verify_bulk_issue_readback(tool_name, result, pending)
+      when 'issue_auto_schedule_apply'
+        verify_auto_schedule_apply_readback(tool_name, result, pending)
       when 'issue_relation_create', 'issue_relation_delete'
         verify_relation_readback(tool_name, result, pending)
       else
@@ -572,6 +579,67 @@ module RedmineTxMcp
           status: 'pending',
           checked_entities: verified_ids,
           message: "일괄 변경 검증 진행 중입니다. 표본 #{verified_ids.size}/#{required_count}건을 확인했습니다."
+        }
+      end
+    end
+
+    def verify_auto_schedule_apply_readback(tool_name, result, pending)
+      expected_rows = Array(pending.dig('requested_changes', 'scheduled_dates')).map { |row| stringify(row) }
+      expected_by_id = expected_rows.each_with_object({}) do |row, memo|
+        issue_id = integer_or_nil(row['id'])
+        memo[issue_id] = row if issue_id
+      end
+      return { matched: false } if expected_by_id.empty?
+
+      actual_rows = extract_auto_schedule_rows_from_read_result(tool_name, result)
+      matches = actual_rows.select { |row| expected_by_id.key?(integer_or_nil(row['id'])) }
+      return { matched: false } if matches.empty?
+
+      verified_ids = Array(pending['verified_issue_ids'])
+      mismatches = []
+      newly_verified = []
+
+      matches.each do |row|
+        issue_id = integer_or_nil(row['id'])
+        expected = expected_by_id[issue_id]
+        next unless issue_id && expected
+
+        issue_mismatches = []
+        issue_mismatches << 'start_date' unless comparable_values?(expected['start_date'], row['start_date'])
+        issue_mismatches << 'due_date' unless comparable_values?(expected['due_date'], row['due_date'])
+
+        if issue_mismatches.empty?
+          newly_verified << issue_id
+        else
+          mismatches << "##{issue_id}: #{issue_mismatches.join(', ')}"
+        end
+      end
+
+      return {
+        matched: true,
+        status: 'failed',
+        checked_entities: matches.map { |row| integer_or_nil(row['id']) }.compact,
+        mismatches: mismatches,
+        message: "자동 일정 적용 검증에서 불일치가 발견되었습니다: #{mismatches.join(' | ')}."
+      } if mismatches.any?
+
+      verified_ids = (verified_ids + newly_verified).compact.uniq
+      @state['pending_mutation']['verified_issue_ids'] = verified_ids
+
+      required_count = [pending['required_sample_size'].to_i, 1].max
+      if verified_ids.size >= required_count
+        {
+          matched: true,
+          status: 'passed',
+          checked_entities: verified_ids,
+          message: "자동 일정 적용 read-back 검증이 통과했습니다. 확인된 이슈: #{verified_ids.map { |id| "##{id}" }.join(', ')}."
+        }
+      else
+        {
+          matched: true,
+          status: 'pending',
+          checked_entities: verified_ids,
+          message: "자동 일정 적용 검증 진행 중입니다. 표본 #{verified_ids.size}/#{required_count}건을 확인했습니다."
         }
       end
     end
@@ -659,14 +727,36 @@ module RedmineTxMcp
         changes['relation_type'] = relation['relation_type'] if relation.key?('relation_type')
       end
 
+      if tool_name.to_s == 'issue_auto_schedule_apply'
+        scheduled_dates = Array(result['issues']).filter_map do |issue|
+          row = stringify(issue)
+          issue_id = integer_or_nil(row['id'])
+          next unless issue_id
+
+          {
+            'id' => issue_id,
+            'start_date' => string_or_nil(row['start_date']),
+            'due_date' => string_or_nil(row['due_date'])
+          }
+        end
+        changes['scheduled_dates'] = scheduled_dates if scheduled_dates.any?
+      end
+
       changes
     end
 
     def required_sample_size_for(tool_name, tool_input, result)
-      return 0 unless tool_name.to_s == 'insert_bulk_update'
+      if tool_name.to_s == 'insert_bulk_update'
+        issue_ids = extract_issue_ids(tool_name, tool_input, result)
+        return [issue_ids.size, 3].min
+      end
 
-      issue_ids = extract_issue_ids(tool_name, tool_input, result)
-      [issue_ids.size, 3].min
+      if tool_name.to_s == 'issue_auto_schedule_apply'
+        issue_ids = extract_issue_ids(tool_name, tool_input, result)
+        return [issue_ids.size, 5].min
+      end
+
+      0
     end
 
     def compare_issue_changes(issue, requested_changes)
@@ -758,9 +848,32 @@ module RedmineTxMcp
     end
 
     def extract_issue_rows_from_read_result(tool_name, result)
-      return [stringify(result)] if tool_name.to_s == 'issue_get'
+      if tool_name.to_s == 'issue_get'
+        issues = Array(result['issues']).map { |issue| stringify(issue) }
+        return issues if issues.any?
+
+        return [stringify(result)]
+      end
 
       Array(result['issues']).map { |issue| stringify(issue) }
+    end
+
+    def extract_auto_schedule_rows_from_read_result(tool_name, result)
+      case tool_name.to_s
+      when 'issue_get'
+        extract_issue_rows_from_read_result(tool_name, result)
+      when 'issue_schedule_tree'
+        trees = if result['trees'].is_a?(Array)
+                  Array(result['trees']).map { |tree| stringify(tree) }
+                else
+                  [stringify(result)]
+                end
+        trees.flat_map do |tree|
+          Array(tree['children']).map { |issue| stringify(issue) }
+        end
+      else
+        []
+      end
     end
 
     def extract_relations_from_read_result(tool_name, result)
@@ -817,10 +930,12 @@ module RedmineTxMcp
     def extract_issue_ids(tool_name, tool_input, result)
       values = []
       values.concat extract_integers(tool_input['issue_ids'])
+      values.concat extract_integers(tool_input['ids'])
       values << integer_or_nil(tool_input['id']) if tool_name.to_s.start_with?('issue_')
       values << integer_or_nil(tool_input['issue_id'])
       values << integer_or_nil(tool_input['related_issue_id'])
       values << integer_or_nil(tool_input['parent_id'])
+      values.concat extract_integers(tool_input['parent_ids'])
       values << integer_or_nil(tool_input['parent_issue_id'])
       values << integer_or_nil(result['id']) if tool_name.to_s.start_with?('issue_')
       values.concat extract_integers(result['issue_ids'])
@@ -830,6 +945,7 @@ module RedmineTxMcp
       values.concat Array(result['issues']).map { |issue| integer_or_nil(stringify(issue)['id']) }
       values.concat Array(result['children']).map { |issue| integer_or_nil(stringify(issue)['id']) }
       values.concat Array(result['scheduled_issues']).map { |issue| integer_or_nil(stringify(issue)['id']) }
+      values.concat Array(result['trees']).flat_map { |tree| Array(stringify(tree)['children']) }.map { |issue| integer_or_nil(stringify(issue)['id']) }
       values.compact.uniq
     end
 

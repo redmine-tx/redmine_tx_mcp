@@ -73,12 +73,24 @@ Redmine issues follow a hierarchy: **Version (milestone) → Parent issues (feat
 3. **Bug analysis:** `bug_statistics(project_id)` → aggregated bug dashboard with summary counts, daily trend, and breakdowns by category/assignee. Does NOT return individual bug records.
 4. **Drill down:** `issue_get(id, include_journals: true)` → read one issue's detailed fields, parent issue, and current relations
 
+### Schedule analysis (date/deadline focus)
+1. **Version schedule:** `version_schedule_report(version_id)` → all parents with children's date ranges and schedule alerts (missing dates, overdue, past-deadline). Use this instead of version_overview when the question is about dates/deadlines.
+2. **Parent + children dates:** `issue_schedule_tree(parent_id)` or `issue_schedule_tree(parent_ids: [...])` → parent and every child's individual dates, hours, custom fields, and schedule gap detection. Use this instead of issue_children_summary when you need each child's actual dates or custom field values.
+3. **Bulk custom field check:** `issue_list(..., include_custom_fields: true)` → list items with custom field values included. Use when comparing custom fields across many issues without fetching each one.
+
+### Automatic scheduling
+- To automatically place unscheduled descendant work items under one parent issue, first call `issue_auto_schedule_preview(parent_issue_id, assign_from_date?)`.
+- If the preview reports missing estimated hours, do not apply it yet. Fix those inputs first.
+- Only after reviewing the preview should you call `issue_auto_schedule_apply(preview_token)`.
+- After applying, verify the saved dates with `issue_get(ids: [...])` or `issue_schedule_tree(parent_id)` before claiming success.
+
 > **bug_statistics vs issue_list**: Use `bug_statistics` for aggregate questions (how many bugs, trends, who has the most, category breakdown). Use `issue_list(tracker_id: <bug_tracker_id>)` to get individual bug records. Statistics first, then drill into the list if needed.
 
 ### issue_list vs issue_get
-- `issue_list` is for searching and browsing many issues. It returns lightweight summary rows and may be paginated.
+- `issue_list` is for searching and browsing many issues. It returns lightweight summary rows and may be paginated. Add `include_custom_fields: true` when custom field values are needed in list results.
 - `issue_list` rows include lightweight `relation_summary` hints such as whether the issue has predecessors, successors, or blockers, but not the full dependency graph.
-- `issue_get` is for one exact issue after you already know the ID. It returns detailed fields, parent issue, current relations, and optionally journals/children.
+- `issue_get(id)` is for one exact issue. It returns detailed fields, parent issue, current relations, and optionally journals/children.
+- `issue_get(ids: [id1, id2, ...])` fetches up to 25 issues in one call with full details including custom fields. Use this instead of calling issue_get repeatedly.
 - Do not treat `issue_list` rows as the full source of truth for one issue when the user asks about dependencies, parent/child context, comments, or exact current state. Switch to `issue_get(id)`.
 
 ### Uploaded spreadsheet workflow
@@ -193,7 +205,8 @@ Each issue has `tip` (localized text) and `tip_code` (stable English key).
 ## Reporting Guidelines
 
 ### When reporting issue or schedule progress:
-- **Parent issue = always include children**: When asked about a parent issue, use `issue_children_summary` to show children progress together. Never report only the parent.
+- **Parent issue = always include children**: When asked about a parent issue, use `issue_children_summary` (for progress) or `issue_schedule_tree` (for date/CF analysis) to show children together. Never report only the parent.
+- **Schedule questions = use schedule tools**: When asked about dates, deadlines, or custom field values, prefer `issue_schedule_tree` or `version_schedule_report` over progress-oriented tools. These return individual child dates and custom fields, avoiding repeated issue_get calls.
 - **Highlight attention items first**: Before general progress, prominently list problems:
   - 🔴 **overdue** (지연) — past due date, show days overdue
   - 🟡 **need_to_start** (미착수) — start date passed but not yet in progress
