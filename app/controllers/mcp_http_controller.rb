@@ -1,6 +1,6 @@
 class McpHttpController < ApplicationController
   skip_before_action :check_if_login_required
-  skip_before_action :verify_authenticity_token, if: :external_mcp_token_request?
+  skip_before_action :verify_authenticity_token, if: :external_mcp_request?
   before_action :set_cors_headers
   before_action :authenticate_mcp_request, except: :options
 
@@ -51,7 +51,7 @@ class McpHttpController < ApplicationController
   end
 
   def authenticate_mcp_request
-    if external_mcp_token_request?
+    if external_mcp_request?
       return authenticate_external_mcp_request
     end
 
@@ -62,22 +62,20 @@ class McpHttpController < ApplicationController
   end
 
   def authenticate_external_mcp_request
-    api_key = request.headers['Authorization']&.gsub(/^Bearer /, '')
-    return render_auth_error("Missing API key") unless api_key.present?
+    if configured_mcp_api_key.present?
+      return render_auth_error("Missing MCP API key") unless bearer_token.present?
+      return render_auth_error("Invalid MCP API key") unless secure_token_equal?(bearer_token, configured_mcp_api_key)
 
-    settings = Setting.plugin_redmine_tx_mcp || {}
-    configured_key = settings['api_key']
-    return render_auth_error("Invalid API key") unless configured_key.present? && api_key == configured_key
-
-    # tools/list, initialize 등 메타데이터 요청은 서버 Bearer 토큰만으로 허용
-    # (사용자 API key 불필요 — DB 접근 없는 순수 스키마 조회)
-    if non_executing_or_metadata_request?
-      @mcp_user = User.anonymous
-      return true
+      # tools/list, initialize 등 메타데이터 요청은 서버 Bearer 토큰만으로 허용
+      # (사용자 API key 불필요 — DB 접근 없는 순수 스키마 조회)
+      if non_executing_or_metadata_request?
+        @mcp_user = User.anonymous
+        return true
+      end
     end
 
     @mcp_user = find_authenticated_mcp_user
-    return render_auth_error("Missing Redmine API key") unless api_key_from_request.present?
+    return render_auth_error("Missing Redmine API key") unless redmine_api_key_from_request.present?
     return render_auth_error("Invalid Redmine API key") unless @mcp_user
     return render_forbidden("Not authorized to use MCP API") unless @mcp_user.allowed_to?(:use_mcp_api, nil, global: true)
 
@@ -85,9 +83,9 @@ class McpHttpController < ApplicationController
   end
 
   def find_authenticated_mcp_user
-    return nil if api_key_from_request.blank?
+    return nil if redmine_api_key_from_request.blank?
 
-    User.find_by_api_key(api_key_from_request)
+    User.find_by_api_key(redmine_api_key_from_request)
   rescue
     nil
   end
@@ -150,8 +148,27 @@ class McpHttpController < ApplicationController
     response.headers['Access-Control-Max-Age'] = '86400'
   end
 
-  def external_mcp_token_request?
-    request.headers['Authorization'].to_s.match?(/\ABearer\s+/)
+  def external_mcp_request?
+    bearer_token.present? || api_key_from_request.present?
+  end
+
+  def bearer_token
+    request.headers['Authorization'].to_s[/\ABearer\s+(.+)\z/, 1].to_s.presence
+  end
+
+  def configured_mcp_api_key
+    settings = Setting.plugin_redmine_tx_mcp || {}
+    settings['api_key'].to_s.strip.presence
+  end
+
+  def redmine_api_key_from_request
+    api_key_from_request.presence || (configured_mcp_api_key.blank? ? bearer_token : nil)
+  end
+
+  def secure_token_equal?(actual, expected)
+    return false if actual.to_s.bytesize != expected.to_s.bytesize
+
+    ActiveSupport::SecurityUtils.secure_compare(actual.to_s, expected.to_s)
   end
 
   def non_executing_or_metadata_request?

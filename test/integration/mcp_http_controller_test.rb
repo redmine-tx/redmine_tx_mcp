@@ -129,6 +129,38 @@ class McpHttpControllerTest < Redmine::IntegrationTest
     assert_equal "Missing Redmine API key", payload.dig('error', 'message')
   end
 
+  test "streamable http works with only Redmine api key when mcp api key is blank" do
+    Setting.plugin_redmine_tx_mcp = (Setting.plugin_redmine_tx_mcp || {}).merge('api_key' => '')
+
+    post '/mcp/http',
+         params: JSON.generate(jsonrpc: '2.0', id: 1, method: 'tools/list'),
+         headers: {
+           'CONTENT_TYPE' => 'application/json',
+           'Accept' => 'application/json, text/event-stream',
+           'X-Redmine-API-Key' => User.find(1).api_key
+         }
+
+    assert_response :success
+    payload = JSON.parse(response.body)
+    assert payload.dig('result', 'tools').present?
+  end
+
+  test "streamable http accepts bearer as Redmine api key when mcp api key is blank" do
+    Setting.plugin_redmine_tx_mcp = (Setting.plugin_redmine_tx_mcp || {}).merge('api_key' => '')
+
+    post '/mcp/http',
+         params: JSON.generate(jsonrpc: '2.0', id: 1, method: 'tools/list'),
+         headers: {
+           'CONTENT_TYPE' => 'application/json',
+           'Accept' => 'application/json, text/event-stream',
+           'Authorization' => "Bearer #{User.find(1).api_key}"
+         }
+
+    assert_response :success
+    payload = JSON.parse(response.body)
+    assert payload.dig('result', 'tools').present?
+  end
+
   test "http mcp external auth does not fall back to admin privileges" do
     post '/mcp/http',
          params: JSON.generate(
