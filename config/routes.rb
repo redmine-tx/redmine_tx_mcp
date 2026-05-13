@@ -7,7 +7,9 @@ get 'mcp/list_tools', to: 'mcp#list_tools'
 get 'mcp/get_tool', to: 'mcp#get_tool'
 
 # HTTP MCP Server endpoints
+get 'mcp/http', to: 'mcp_http#mcp_stream'
 post 'mcp/http', to: 'mcp_http#mcp_request'
+delete 'mcp/http', to: 'mcp_http#delete_session'
 options 'mcp/http', to: 'mcp_http#options'
 
 get 'mcp_admin', to: 'mcp_admin#index'

@@ -7,12 +7,30 @@ class McpHttpController < ApplicationController
   def mcp_request
     User.current = @mcp_user
 
-    request_body = request.raw_post
-    headers = request.headers
+    parsed_request = parse_json_rpc_body
+    return unless parsed_request
 
-    response_data = RedmineTxMcp::HttpMcpServer.handle_request(request_body, headers)
+    unless parsed_request.is_a?(Hash)
+      render_streamable_http_error("Batch JSON-RPC requests are not supported", status: :bad_request)
+      return
+    end
+
+    if json_rpc_notification_or_response?(parsed_request)
+      head :accepted
+      return
+    end
+
+    response_data = RedmineTxMcp::HttpMcpServer.handle_parsed_request(parsed_request, request.headers)
 
     render json: response_data
+  end
+
+  def mcp_stream
+    render_streamable_http_error("Server-initiated SSE streams are not supported", status: :method_not_allowed)
+  end
+
+  def delete_session
+    head :method_not_allowed
   end
 
   # Handle CORS preflight requests
@@ -53,7 +71,7 @@ class McpHttpController < ApplicationController
 
     # tools/list, initialize 등 메타데이터 요청은 서버 Bearer 토큰만으로 허용
     # (사용자 API key 불필요 — DB 접근 없는 순수 스키마 조회)
-    if metadata_only_request?
+    if non_executing_or_metadata_request?
       @mcp_user = User.anonymous
       return true
     end
@@ -96,6 +114,16 @@ class McpHttpController < ApplicationController
     false
   end
 
+  def render_streamable_http_error(message, status:)
+    render json: {
+      jsonrpc: "2.0",
+      error: {
+        code: -32000,
+        message: message
+      }
+    }, status: status
+  end
+
   def set_cors_headers
     settings = Setting.plugin_redmine_tx_mcp || {}
     allowed_origins = settings['allowed_origins']
@@ -109,8 +137,16 @@ class McpHttpController < ApplicationController
       end
     end
 
-    response.headers['Access-Control-Allow-Methods'] = 'POST, OPTIONS'
-    response.headers['Access-Control-Allow-Headers'] = 'Content-Type, Authorization, X-Redmine-API-Key'
+    response.headers['Access-Control-Allow-Methods'] = 'GET, POST, DELETE, OPTIONS'
+    response.headers['Access-Control-Allow-Headers'] = [
+      'Accept',
+      'Content-Type',
+      'Authorization',
+      'X-Redmine-API-Key',
+      'MCP-Protocol-Version',
+      'Mcp-Session-Id',
+      'Last-Event-ID'
+    ].join(', ')
     response.headers['Access-Control-Max-Age'] = '86400'
   end
 
@@ -118,11 +154,29 @@ class McpHttpController < ApplicationController
     request.headers['Authorization'].to_s.match?(/\ABearer\s+/)
   end
 
-  def metadata_only_request?
-    body = request.raw_post.to_s
-    return false if body.blank?
-    parsed = JSON.parse(body) rescue nil
+  def non_executing_or_metadata_request?
+    parsed = parsed_json_rpc_body
+    return true if parsed.nil?
     return false unless parsed.is_a?(Hash)
+    return true if json_rpc_notification_or_response?(parsed)
+
     %w[initialize tools/list resources/list].include?(parsed['method'])
+  rescue JSON::ParserError
+    true
+  end
+
+  def parse_json_rpc_body
+    parsed_json_rpc_body
+  rescue JSON::ParserError => e
+    render_streamable_http_error("Invalid JSON: #{e.message}", status: :bad_request)
+    nil
+  end
+
+  def parsed_json_rpc_body
+    @parsed_json_rpc_body ||= JSON.parse(request.raw_post.to_s)
+  end
+
+  def json_rpc_notification_or_response?(parsed)
+    !parsed.key?('id') || !parsed.key?('method')
   end
 end

@@ -10,6 +10,23 @@ module RedmineTxMcp
         begin
           # Parse JSON request
           request = JSON.parse(request_body)
+          handle_parsed_request(request, headers)
+
+        rescue JSON::ParserError => e
+          @logger.error "JSON Parse Error: #{e.message}"
+          create_error_response("Invalid JSON: #{e.message}")
+        rescue => e
+          @logger.error "HTTP MCP Server Error: #{e.message}"
+          @logger.error e.backtrace.join("\n")
+          create_error_response("Internal server error: #{e.message}")
+        end
+      end
+
+      def handle_parsed_request(request, headers = {})
+        @logger ||= Logger.new(Rails.root.join('log', 'mcp_http_server.log'))
+
+        begin
+          return create_error_response("Invalid JSON-RPC request") unless request.is_a?(Hash)
 
           # Log request
           @logger.info "HTTP MCP Request: #{request['method']}"
@@ -34,9 +51,6 @@ module RedmineTxMcp
           @logger.info "HTTP MCP Response: #{response[:result] ? 'success' : 'error'}"
           response
 
-        rescue JSON::ParserError => e
-          @logger.error "JSON Parse Error: #{e.message}"
-          create_error_response("Invalid JSON: #{e.message}")
         rescue => e
           @logger.error "HTTP MCP Server Error: #{e.message}"
           @logger.error e.backtrace.join("\n")
@@ -51,7 +65,7 @@ module RedmineTxMcp
           jsonrpc: "2.0",
           id: request['id'],
           result: {
-            protocolVersion: "2024-11-05",
+            protocolVersion: "2025-06-18",
             capabilities: {
               tools: {},
               resources: {}

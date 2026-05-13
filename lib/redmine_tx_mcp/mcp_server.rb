@@ -24,6 +24,28 @@ module RedmineTxMcp
         end
       end
 
+      # STDIO transport entrypoint for MCP clients such as Claude Desktop.
+      # The transport is newline-delimited JSON-RPC over stdin/stdout.
+      def start_server(input: $stdin, output: $stdout)
+        setup_logger
+        setup_stdio_user
+        logger.info "Starting Redmine MCP stdio server"
+
+        input.each_line do |line|
+          line = line.strip
+          next if line.empty?
+
+          response = handle_stdio_line(line)
+          next if response.nil?
+
+          output.write(JSON.generate(response))
+          output.write("\n")
+          output.flush
+        end
+      ensure
+        logger.info "Stopped Redmine MCP stdio server" if @logger
+      end
+
       private
 
       def setup_logger
@@ -51,12 +73,57 @@ module RedmineTxMcp
         end
       end
 
+      def setup_stdio_user
+        user_api_key = ENV['REDMINE_USER_API_KEY'].to_s.strip
+
+        if user_api_key.empty?
+          User.current = User.anonymous
+          logger.warn "REDMINE_USER_API_KEY is not set; MCP stdio server will run as anonymous"
+          return
+        end
+
+        user = User.find_by_api_key(user_api_key)
+        raise "Invalid REDMINE_USER_API_KEY" unless user
+        unless user.allowed_to?(:use_mcp_api, nil, global: true)
+          raise "Configured Redmine user is not authorized to use MCP API"
+        end
+
+        User.current = user
+      end
+
+      def handle_stdio_line(line)
+        request = JSON.parse(line)
+
+        if request.is_a?(Array)
+          responses = request.filter_map { |single_request| response_for_stdio_request(single_request) }
+          responses.empty? ? nil : responses
+        else
+          response_for_stdio_request(request)
+        end
+      rescue JSON::ParserError => e
+        logger.error "STDIO JSON Parse Error: #{e.message}"
+        create_error_response("Invalid JSON: #{e.message}")
+      rescue => e
+        logger.error "STDIO Request Error: #{e.message}"
+        logger.error e.backtrace.join("\n")
+        create_error_response("Internal server error: #{e.message}", (request['id'] rescue nil))
+      end
+
+      def response_for_stdio_request(request)
+        return create_error_response("Invalid JSON-RPC request") unless request.is_a?(Hash)
+
+        # JSON-RPC notifications, such as notifications/initialized, do not get responses.
+        return nil unless request.key?('id')
+
+        handle_request(request)
+      end
+
       def handle_initialize(request)
         {
           jsonrpc: "2.0",
           id: request['id'],
           result: {
-            protocolVersion: "2024-11-05",
+            protocolVersion: "2025-06-18",
             capabilities: {
               tools: {},
               resources: {}

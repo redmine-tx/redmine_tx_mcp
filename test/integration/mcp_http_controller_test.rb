@@ -67,19 +67,66 @@ class McpHttpControllerTest < Redmine::IntegrationTest
     assert_equal -32002, payload.dig('error', 'code')
   end
 
-  test "http mcp requires a Redmine user api key" do
+  test "streamable http initialize works with bearer token only" do
     post '/mcp/http',
-         params: JSON.generate(jsonrpc: '2.0', id: 1, method: 'tools/list'),
+         params: JSON.generate(jsonrpc: '2.0', id: 1, method: 'initialize'),
          headers: {
            'CONTENT_TYPE' => 'application/json',
+           'Accept' => 'application/json, text/event-stream',
            'Authorization' => 'Bearer plugin-secret',
            'Origin' => 'https://allowed.example'
+         }
+
+    assert_response :success
+    payload = JSON.parse(response.body)
+    assert_equal '2025-06-18', payload.dig('result', 'protocolVersion')
+    assert_nil response.headers['Mcp-Session-Id']
+    assert_equal 'https://allowed.example', response.headers['Access-Control-Allow-Origin']
+  end
+
+  test "streamable http notifications return accepted without a body" do
+    post '/mcp/http',
+         params: JSON.generate(jsonrpc: '2.0', method: 'notifications/initialized'),
+         headers: {
+           'CONTENT_TYPE' => 'application/json',
+           'Accept' => 'application/json, text/event-stream',
+           'Authorization' => 'Bearer plugin-secret'
+         }
+
+    assert_response :accepted
+    assert response.body.blank?
+  end
+
+  test "streamable http get returns method not allowed when sse stream is unsupported" do
+    get '/mcp/http',
+        headers: {
+          'Accept' => 'text/event-stream',
+          'Authorization' => 'Bearer plugin-secret'
+        }
+
+    assert_response :method_not_allowed
+  end
+
+  test "streamable http tool calls require a Redmine user api key" do
+    post '/mcp/http',
+         params: JSON.generate(
+           jsonrpc: '2.0',
+           id: 1,
+           method: 'tools/call',
+           params: {
+             name: 'issue_list',
+             arguments: { page: 1, per_page: 1 }
+           }
+         ),
+         headers: {
+           'CONTENT_TYPE' => 'application/json',
+           'Accept' => 'application/json, text/event-stream',
+           'Authorization' => 'Bearer plugin-secret'
          }
 
     assert_response :unauthorized
     payload = JSON.parse(response.body)
     assert_equal "Missing Redmine API key", payload.dig('error', 'message')
-    assert_equal 'https://allowed.example', response.headers['Access-Control-Allow-Origin']
   end
 
   test "http mcp external auth does not fall back to admin privileges" do
