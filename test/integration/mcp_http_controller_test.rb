@@ -1,4 +1,5 @@
 require File.expand_path('../test_helper', __dir__)
+require 'securerandom'
 
 class McpHttpControllerTest < Redmine::IntegrationTest
   def setup
@@ -181,6 +182,46 @@ class McpHttpControllerTest < Redmine::IntegrationTest
     assert_response :forbidden
     payload = JSON.parse(response.body)
     assert_equal "Not authorized to use MCP API", payload.dig('error', 'message')
+  end
+
+  test "http mcp accepts chatbot agent token and injects project context" do
+    user = User.find(1)
+    project = Project.find(1)
+    token = SecureRandom.hex(32)
+    Rails.cache.write(
+      RedmineTxMcp::ClaudeAgentSdkChatbot.token_cache_key(token),
+      {
+        'user_id' => user.id,
+        'project_id' => project.id,
+        'session_id' => 'sdk-test',
+        'workspace' => {
+          'user_id' => user.id,
+          'project_id' => project.id,
+          'session_id' => 'sdk-test'
+        }
+      },
+      expires_in: 1.minute
+    )
+
+    post '/mcp/http',
+         params: JSON.generate(
+           jsonrpc: '2.0',
+           id: 1,
+           method: 'tools/call',
+           params: {
+             name: 'version_list',
+             arguments: {}
+           }
+         ),
+         headers: {
+           'CONTENT_TYPE' => 'application/json',
+           'X-Redmine-Tx-Mcp-Chatbot-Token' => token
+         }
+
+    assert_response :success
+    payload = JSON.parse(response.body)
+    assert payload.dig('result', 'content').present?
+    assert_nil payload['error']
   end
 
   test "http mcp does not emit wildcard cors when allowed origins are blank" do

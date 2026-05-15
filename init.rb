@@ -35,6 +35,7 @@ Rails.application.config.to_prepare do
     redmine_tx_mcp/chatbot_run_guard
     redmine_tx_mcp/chatbot_loop_guard
     redmine_tx_mcp/chatbot_logger
+    redmine_tx_mcp/claude_agent_sdk_chatbot
     redmine_tx_mcp/claude_chatbot
     redmine_tx_mcp/llm_service
     redmine_tx_mcp/mcp_server
@@ -267,7 +268,11 @@ PROMPT
     cache_ttl: 300,
     max_run_seconds: 180,
     max_tool_call_depth: 15,
-    max_loop_iterations: 0
+    max_loop_iterations: 0,
+    chatbot_agent_backend: 'claude_agent_sdk',
+    agent_sdk_python_path: '',
+    agent_sdk_worker_path: '',
+    agent_sdk_mcp_url: ''
   }, partial: 'settings/mcp_settings'
 
   project_module :redmine_tx_mcp do

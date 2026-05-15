@@ -313,6 +313,9 @@ class ChatbotController < ApplicationController
 
   def create_new_chatbot
     settings = Setting.plugin_redmine_tx_mcp || {}
+    backend = settings['chatbot_agent_backend'].presence || 'claude_agent_sdk'
+    return create_agent_sdk_chatbot(settings) if backend == 'claude_agent_sdk'
+
     provider = settings['llm_provider'] || 'anthropic'
 
     if provider == 'openai'
@@ -336,6 +339,26 @@ class ChatbotController < ApplicationController
 
       RedmineTxMcp::ClaudeChatbot.new(api_key: api_key, model: model, project_id: @project.id)
     end
+  end
+
+  def create_agent_sdk_chatbot(settings)
+    api_key = settings['claude_api_key'].presence || ENV['ANTHROPIC_API_KEY']
+    model = settings['claude_model'].presence || 'claude-sonnet-4-6'
+
+    unless api_key.present?
+      raise "Claude API key not configured. Please set it in MCP settings or ANTHROPIC_API_KEY environment variable."
+    end
+
+    RedmineTxMcp::ClaudeAgentSdkChatbot.new(
+      api_key: api_key,
+      model: model,
+      project_id: @project.id,
+      mcp_url: chatbot_agent_mcp_url(settings)
+    )
+  end
+
+  def chatbot_agent_mcp_url(settings)
+    settings['agent_sdk_mcp_url'].presence || "#{request.base_url}/mcp/http"
   end
 
   def conversation_cache_key(session_id)

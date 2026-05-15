@@ -20,7 +20,11 @@ class McpHttpController < ApplicationController
       return
     end
 
-    response_data = RedmineTxMcp::HttpMcpServer.handle_parsed_request(parsed_request, request.headers)
+    response_data = RedmineTxMcp::HttpMcpServer.handle_parsed_request(
+      parsed_request,
+      request.headers,
+      chatbot_context: @chatbot_agent_context
+    )
 
     render json: response_data
   end
@@ -51,6 +55,10 @@ class McpHttpController < ApplicationController
   end
 
   def authenticate_mcp_request
+    if chatbot_agent_token.present?
+      return authenticate_chatbot_agent_request
+    end
+
     if external_mcp_request?
       return authenticate_external_mcp_request
     end
@@ -59,6 +67,22 @@ class McpHttpController < ApplicationController
     return render_forbidden("Not authorized to use MCP API") unless User.current.allowed_to?(:use_mcp_api, nil, global: true)
 
     @mcp_user = User.current
+  end
+
+  def authenticate_chatbot_agent_request
+    context = RedmineTxMcp::ClaudeAgentSdkChatbot.read_token_context(chatbot_agent_token)
+    return render_auth_error("Invalid chatbot agent token") unless context.is_a?(Hash)
+
+    user = User.find_by(id: context['user_id'])
+    return render_auth_error("Invalid chatbot agent user") unless user
+
+    project = Project.find_by(id: context['project_id'])
+    return render_forbidden("Not authorized to use chatbot") unless project&.visible?(user)
+    return render_forbidden("Not authorized to use chatbot") unless user.admin? || user.allowed_to?(:use_chatbot, project)
+
+    @mcp_user = user
+    @chatbot_agent_context = context
+    true
   end
 
   def authenticate_external_mcp_request
@@ -141,6 +165,7 @@ class McpHttpController < ApplicationController
       'Content-Type',
       'Authorization',
       'X-Redmine-API-Key',
+      'X-Redmine-Tx-Mcp-Chatbot-Token',
       'MCP-Protocol-Version',
       'Mcp-Session-Id',
       'Last-Event-ID'
@@ -149,11 +174,15 @@ class McpHttpController < ApplicationController
   end
 
   def external_mcp_request?
-    bearer_token.present? || api_key_from_request.present?
+    bearer_token.present? || api_key_from_request.present? || chatbot_agent_token.present?
   end
 
   def bearer_token
     request.headers['Authorization'].to_s[/\ABearer\s+(.+)\z/, 1].to_s.presence
+  end
+
+  def chatbot_agent_token
+    request.headers['X-Redmine-Tx-Mcp-Chatbot-Token'].to_s.presence
   end
 
   def configured_mcp_api_key

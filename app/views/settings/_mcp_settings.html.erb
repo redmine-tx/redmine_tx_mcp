@@ -11,6 +11,43 @@
   </p>
 
   <p>
+    <%= label_tag 'settings_chatbot_agent_backend', 'Chatbot Agent Backend' %>
+    <%= select_tag 'settings[chatbot_agent_backend]',
+          options_for_select([
+            ['Claude Agent SDK', 'claude_agent_sdk'],
+            ['Legacy Ruby loop', 'legacy'],
+          ], @settings['chatbot_agent_backend'] || 'claude_agent_sdk'),
+          id: 'settings_chatbot_agent_backend' %>
+    <em>Claude Agent SDK replaces the custom Ruby agent loop. Legacy mode keeps the previous Anthropic/OpenAI-compatible loop.</em>
+  </p>
+
+  <div id="agent-sdk-settings">
+    <p>
+      <%= label_tag 'settings_agent_sdk_python_path', 'Agent SDK Python' %>
+      <%= text_field_tag 'settings[agent_sdk_python_path]', @settings['agent_sdk_python_path'],
+            placeholder: 'python3',
+            style: 'width: 250px;' %>
+      <em>Python executable with <code>claude-agent-sdk</code> installed. Leave blank to use <code>python3</code>.</em>
+    </p>
+
+    <p>
+      <%= label_tag 'settings_agent_sdk_worker_path', 'Agent SDK Worker Path' %>
+      <%= text_field_tag 'settings[agent_sdk_worker_path]', @settings['agent_sdk_worker_path'],
+            placeholder: 'Leave blank to use the bundled worker',
+            style: 'width: 400px;' %>
+      <em>Optional absolute path to a custom worker script.</em>
+    </p>
+
+    <p>
+      <%= label_tag 'settings_agent_sdk_mcp_url', 'Agent SDK MCP URL' %>
+      <%= text_field_tag 'settings[agent_sdk_mcp_url]', @settings['agent_sdk_mcp_url'],
+            placeholder: 'Leave blank to use this Redmine instance /mcp/http',
+            style: 'width: 400px;' %>
+      <em>Override only if the worker must reach Redmine through a different internal URL.</em>
+    </p>
+  </div>
+
+  <p>
     <%= label_tag 'settings_llm_provider', 'LLM Provider' %>
     <%= select_tag 'settings[llm_provider]',
           options_for_select([
@@ -87,16 +124,21 @@
 
   <script type="text/javascript">
   (function() {
+    var backendSelect = document.getElementById('settings_chatbot_agent_backend');
+    var agentSdkSection = document.getElementById('agent-sdk-settings');
     var providerSelect = document.getElementById('settings_llm_provider');
     var anthropicSection = document.getElementById('anthropic-settings');
     var openaiSection = document.getElementById('openai-settings');
 
     function toggleProviderSections() {
+      var backend = backendSelect.value;
       var provider = providerSelect.value;
-      anthropicSection.style.display = (provider === 'anthropic') ? '' : 'none';
-      openaiSection.style.display = (provider === 'openai') ? '' : 'none';
+      agentSdkSection.style.display = (backend === 'claude_agent_sdk') ? '' : 'none';
+      anthropicSection.style.display = (backend === 'claude_agent_sdk' || provider === 'anthropic') ? '' : 'none';
+      openaiSection.style.display = (backend === 'legacy' && provider === 'openai') ? '' : 'none';
     }
 
+    backendSelect.addEventListener('change', toggleProviderSections);
     providerSelect.addEventListener('change', toggleProviderSections);
     toggleProviderSections();
 

@@ -7,6 +7,7 @@ require 'securerandom'
 require 'fileutils'
 
 require 'active_support/cache'
+require 'active_support/notifications'
 require 'active_support/core_ext/numeric/time'
 require 'active_support/core_ext/object/blank'
 require 'active_support/core_ext/string/inflections'
@@ -70,6 +71,10 @@ DEFAULT_PLUGIN_SETTINGS = {
   'openai_endpoint_url' => 'http://example.test/v1/chat/completions',
   'openai_api_key' => 'openai-test-key',
   'claude_api_key' => 'anthropic-test-key',
+  'chatbot_agent_backend' => 'legacy',
+  'agent_sdk_python_path' => '',
+  'agent_sdk_worker_path' => '',
+  'agent_sdk_mcp_url' => '',
   'chatbot_feature_flags' => {
     'enhanced_metrics' => true,
     'adaptive_compaction' => true,
@@ -268,4 +273,5 @@ require_relative '../../lib/redmine_tx_mcp/chatbot_mutation_workflow'
 require_relative '../../lib/redmine_tx_mcp/chatbot_run_guard'
 require_relative '../../lib/redmine_tx_mcp/chatbot_loop_guard'
 require_relative '../../lib/redmine_tx_mcp/chatbot_logger'
+require_relative '../../lib/redmine_tx_mcp/claude_agent_sdk_chatbot'
 require_relative '../../lib/redmine_tx_mcp/claude_chatbot'
