@@ -29,6 +29,34 @@ WRITE_TOOL_NAMES = {
     "user_delete",
 }
 
+READ_TOOL_NAMES = {
+    "issue_list",
+    "issue_get",
+    "issue_relations_get",
+    "issue_children_summary",
+    "issue_schedule_tree",
+    "issue_auto_schedule_preview",
+    "bug_statistics",
+    "version_list",
+    "version_get",
+    "version_overview",
+    "version_statistics",
+    "version_schedule_report",
+    "project_list",
+    "project_get",
+    "project_members",
+    "user_list",
+    "user_get",
+    "user_projects",
+    "user_groups",
+    "user_roles",
+    "spreadsheet_list_uploads",
+    "spreadsheet_list_sheets",
+    "spreadsheet_preview_sheet",
+    "spreadsheet_extract_rows",
+    "run_script",
+}
+
 
 def emit(event: dict[str, Any]) -> None:
     sys.stdout.write(json.dumps(event, ensure_ascii=False, separators=(",", ":")) + "\n")
@@ -63,10 +91,15 @@ def tool_label(tool_name: str) -> str:
     return unqualified_tool_name(tool_name).replace("_", " ")
 
 
-def build_permission_callback(server_name: str, max_write_tools: int):
+def build_permission_callback(
+    server_name: str,
+    max_write_tools: int,
+    allowed_tool_names: set[str],
+    mutation_requires_read: bool,
+    tool_state: dict[str, Any],
+):
     from claude_agent_sdk import PermissionResultAllow, PermissionResultDeny
 
-    state = {"write_count": 0}
     prefix = f"mcp__{server_name}__"
 
     async def can_use_tool(tool_name: str, input_data: dict[str, Any], context: Any):
@@ -77,16 +110,42 @@ def build_permission_callback(server_name: str, max_write_tools: int):
             )
 
         bare_name = unqualified_tool_name(tool_name)
+        if allowed_tool_names and bare_name not in allowed_tool_names:
+            return PermissionResultDeny(
+                message=(
+                    f"The tool `{bare_name}` is not relevant to this request. "
+                    "Use one of the selected Redmine MCP tools instead."
+                ),
+                interrupt=False,
+            )
+
         if bare_name in WRITE_TOOL_NAMES:
-            if state["write_count"] >= max_write_tools:
+            if mutation_requires_read and tool_state.get("successful_read_count", 0) <= 0:
                 return PermissionResultDeny(
                     message=(
-                        "Only one Redmine write tool may run per agent turn. "
-                        "Read back and verify the previous change before attempting another write."
+                        "Read the current Redmine state with an MCP read tool before running a write tool."
                     ),
                     interrupt=False,
                 )
-            state["write_count"] += 1
+
+            if tool_state.get("write_pending_readback"):
+                return PermissionResultDeny(
+                    message=(
+                        "Read back and verify the previous Redmine write before attempting another write."
+                    ),
+                    interrupt=False,
+                )
+
+            if tool_state["write_count"] >= max_write_tools:
+                return PermissionResultDeny(
+                    message=(
+                        f"At most {max_write_tools} Redmine write tool call(s) may run for this request. "
+                        "Ask the user to continue after verifying the current changes."
+                    ),
+                    interrupt=False,
+                )
+            tool_state["write_count"] += 1
+            tool_state["write_pending_readback"] = True
 
         return PermissionResultAllow()
 
@@ -123,7 +182,7 @@ def message_type(message: Any) -> str:
     return class_name
 
 
-def emit_assistant_events(message: Any) -> None:
+def emit_assistant_events(message: Any, tool_state: dict[str, Any]) -> None:
     content = attr(message, "content", []) or []
     text_parts: list[str] = []
 
@@ -131,6 +190,12 @@ def emit_assistant_events(message: Any) -> None:
         btype = block_type(block)
         if btype == "tool_use":
             name = attr(block, "name", "")
+            tool_id = attr(block, "id")
+            if tool_id:
+                tool_state["tool_uses"][tool_id] = {
+                    "name": unqualified_tool_name(name),
+                    "input": attr(block, "input", {}) or {},
+                }
             emit({
                 "type": "tool_call",
                 "tool": unqualified_tool_name(name),
@@ -145,11 +210,48 @@ def emit_assistant_events(message: Any) -> None:
         emit({"type": "thinking", "message": "응답을 정리 중입니다..."})
 
 
-def emit_user_events(message: Any) -> None:
+def emit_user_events(message: Any, tool_state: dict[str, Any]) -> None:
     tool_result = attr(message, "tool_use_result")
     parent_tool_use_id = attr(message, "parent_tool_use_id")
+    content = attr(message, "content", []) or []
+    result_blocks = [
+        block for block in content
+        if block_type(block) == "tool_result"
+    ] if isinstance(content, list) else []
+
+    if result_blocks:
+        for block in result_blocks:
+            tool_use_id = attr(block, "tool_use_id")
+            tool_use = tool_state["tool_uses"].get(tool_use_id, {})
+            tool_name = tool_use.get("name") or "redmine"
+            is_error = bool(attr(block, "is_error", False))
+            if not is_error and tool_name in READ_TOOL_NAMES:
+                tool_state["successful_read_count"] += 1
+                tool_state["write_pending_readback"] = False
+
+            emit({
+                "type": "tool_result",
+                "tool": tool_name,
+                "input": tool_use.get("input") or {},
+                "content": attr(block, "content"),
+                "is_error": is_error,
+            })
+        return
+
     if tool_result is not None or parent_tool_use_id is not None:
-        emit({"type": "tool_result", "tool": "redmine"})
+        tool_use = tool_state["tool_uses"].get(parent_tool_use_id, {})
+        tool_name = tool_use.get("name") or "redmine"
+        if tool_name in READ_TOOL_NAMES:
+            tool_state["successful_read_count"] += 1
+            tool_state["write_pending_readback"] = False
+
+        emit({
+            "type": "tool_result",
+            "tool": tool_name,
+            "input": tool_use.get("input") or {},
+            "content": tool_result,
+            "is_error": False,
+        })
 
 
 def emit_system_events(message: Any) -> None:
@@ -191,6 +293,22 @@ async def main() -> int:
         emit({"type": "done"})
         return 4
 
+    allowed_tool_names = {
+        str(name) for name in (request.get("allowed_tool_names") or [])
+        if str(name).strip()
+    }
+    tool_state: dict[str, Any] = {
+        "tool_uses": {},
+        "write_count": 0,
+        "successful_read_count": 0,
+        "write_pending_readback": False,
+    }
+    try:
+        max_write_tools = int(request.get("max_write_tools") or 1)
+    except (TypeError, ValueError):
+        max_write_tools = 1
+    max_write_tools = max(1, min(max_write_tools, 5))
+
     options_kwargs: dict[str, Any] = {
         "tools": [],
         "allowed_tools": [],
@@ -207,8 +325,14 @@ async def main() -> int:
             "AskUserQuestion",
             "TodoWrite",
         ],
-        "permission_mode": "dontAsk",
-        "can_use_tool": build_permission_callback(server_name, max_write_tools=1),
+        "permission_mode": "default",
+        "can_use_tool": build_permission_callback(
+            server_name,
+            max_write_tools=max_write_tools,
+            allowed_tool_names=allowed_tool_names,
+            mutation_requires_read=bool(request.get("mutation_requires_read")),
+            tool_state=tool_state,
+        ),
         "system_prompt": request.get("system_prompt") or None,
         "mcp_servers": {
             server_name: {
@@ -239,9 +363,9 @@ async def main() -> int:
             if mtype == "system":
                 emit_system_events(message)
             elif mtype == "assistant":
-                emit_assistant_events(message)
+                emit_assistant_events(message, tool_state)
             elif mtype == "user":
-                emit_user_events(message)
+                emit_user_events(message, tool_state)
             elif mtype == "result":
                 session_id = attr(message, "session_id")
                 if session_id:
