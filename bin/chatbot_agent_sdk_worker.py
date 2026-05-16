@@ -221,7 +221,6 @@ async def main() -> int:
         "model": request.get("model") or None,
         "cwd": request.get("cwd") or os.getcwd(),
         "setting_sources": [],
-        "user": request.get("user") or None,
     }
 
     resume_session_id = request.get("resume_session_id")
