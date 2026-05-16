@@ -93,6 +93,15 @@ def build_permission_callback(server_name: str, max_write_tools: int):
     return can_use_tool
 
 
+async def prompt_stream(message: str):
+    yield {
+        "type": "user",
+        "message": {"role": "user", "content": message},
+        "parent_tool_use_id": None,
+        "session_id": "redmine-chatbot",
+    }
+
+
 def message_type(message: Any) -> str:
     explicit = attr(message, "type")
     if explicit:
@@ -226,7 +235,7 @@ async def main() -> int:
     result_is_error = False
 
     try:
-        async for message in query(prompt=request.get("message") or "", options=options):
+        async for message in query(prompt=prompt_stream(request.get("message") or ""), options=options):
             mtype = message_type(message)
             if mtype == "system":
                 emit_system_events(message)
