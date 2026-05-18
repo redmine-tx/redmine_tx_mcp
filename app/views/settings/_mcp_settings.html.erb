@@ -14,11 +14,11 @@
     <%= label_tag 'settings_chatbot_agent_backend', 'Chatbot Agent Backend' %>
     <%= select_tag 'settings[chatbot_agent_backend]',
           options_for_select([
-            ['Claude Agent SDK', 'claude_agent_sdk'],
             ['Legacy Ruby loop', 'legacy'],
-          ], @settings['chatbot_agent_backend'] || 'claude_agent_sdk'),
+            ['Claude Agent SDK', 'claude_agent_sdk'],
+          ], @settings['chatbot_agent_backend'].presence || 'legacy'),
           id: 'settings_chatbot_agent_backend' %>
-    <em>Claude Agent SDK replaces the custom Ruby agent loop. Legacy mode keeps the previous Anthropic/OpenAI-compatible loop.</em>
+    <em>Legacy mode is the production default. Claude Agent SDK remains available for controlled testing.</em>
   </p>
 
   <div id="agent-sdk-settings">

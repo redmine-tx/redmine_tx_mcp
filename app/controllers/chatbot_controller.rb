@@ -313,7 +313,7 @@ class ChatbotController < ApplicationController
 
   def create_new_chatbot
     settings = Setting.plugin_redmine_tx_mcp || {}
-    backend = settings['chatbot_agent_backend'].presence || 'claude_agent_sdk'
+    backend = settings['chatbot_agent_backend'].presence || 'legacy'
     return create_agent_sdk_chatbot(settings) if backend == 'claude_agent_sdk'
 
     provider = settings['llm_provider'] || 'anthropic'

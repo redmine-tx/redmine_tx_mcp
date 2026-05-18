@@ -105,6 +105,50 @@ class ChatbotSessionsTest < Redmine::IntegrationTest
     assert_equal 0, second_workspace.list_uploads.size
   end
 
+  test "chat submit defaults to legacy chatbot backend when backend setting is absent" do
+    log_user('admin', 'admin')
+    project = Project.find(1)
+    original_settings = Setting.plugin_redmine_tx_mcp || {}
+    Setting.plugin_redmine_tx_mcp = original_settings.except('chatbot_agent_backend').merge(
+      'claude_api_key' => 'anthropic-test-key',
+      'llm_provider' => 'anthropic'
+    )
+
+    fake_chatbot = Class.new do
+      def restore_session_state(_snapshot); end
+      def set_workspace_context(**_kwargs); end
+      def chat(_message, user: nil)
+        { success: true, message: 'legacy response', conversation_id: 'legacy-conversation' }
+      end
+      def export_session_state
+        { 'agent_state' => { 'adapter' => 'legacy' } }
+      end
+    end.new
+    legacy_created = false
+    sdk_created = false
+
+    RedmineTxMcp::ClaudeChatbot.stub(:new, proc { |_api_key: nil, _model: nil, _project_id: nil, _provider: nil, _endpoint_url: nil|
+      legacy_created = true
+      fake_chatbot
+    }) do
+      RedmineTxMcp::ClaudeAgentSdkChatbot.stub(:new, proc { |_api_key: nil, _model: nil, _project_id: nil, _mcp_url: nil|
+        sdk_created = true
+        raise 'Agent SDK backend should not be selected by default'
+      }) do
+        post chat_submit_chatbot_path(project), params: { message: 'hello' }
+      end
+    end
+
+    assert_response :success
+    payload = JSON.parse(response.body)
+    assert_equal true, payload['success']
+    assert_equal 'legacy response', payload['message']
+    assert legacy_created
+    refute sdk_created
+  ensure
+    Setting.plugin_redmine_tx_mcp = original_settings if defined?(original_settings)
+  end
+
   test "download report uses explicit conversation parameter" do
     log_user('admin', 'admin')
     project = Project.find(1)
