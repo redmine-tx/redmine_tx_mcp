@@ -269,6 +269,7 @@ PROMPT
     max_run_seconds: 180,
     max_tool_call_depth: 15,
     max_loop_iterations: 0,
+    chatbot_max_tokens: 8000,
     chatbot_agent_backend: 'legacy',
     agent_sdk_python_path: '',
     agent_sdk_worker_path: '',

@@ -17,6 +17,10 @@ module RedmineTxMcp
     MAX_GUARD_RETRIES = 2
     DEFAULT_MAX_RUN_SECONDS = 180
     DEFAULT_MAX_TOOL_CALL_DEPTH = 15
+    # Output token ceiling for each model response. Generous by default so long
+    # Korean reports with tables/charts are not truncated mid-answer; only billed
+    # when actually generated. Override via the chatbot_max_tokens setting.
+    DEFAULT_MAX_TOKENS = 8000
     COMPLEX_READ_BUDGET_RATIO = 1.2
     RESEARCH_HEAVY_BUDGET_RATIO = 1.4
     BULK_BUDGET_RATIO = 1.8
@@ -47,7 +51,8 @@ module RedmineTxMcp
       'enhanced_metrics' => true,
       'adaptive_compaction' => true,
       'provider_fallback' => true,
-      'streaming_status' => true
+      'streaming_status' => true,
+      'prompt_caching' => true
     }.freeze
 
     class ProviderRequestError < StandardError
@@ -218,8 +223,10 @@ module RedmineTxMcp
     end
 
     def chat(user_message, user: nil)
-      # Set current user for MCP operations
-      User.current = user || User.find(1)
+      # Set current user for MCP operations. Never silently fall back to the admin
+      # (user 1) — that would run tools with elevated permissions. Keep the caller's
+      # user, otherwise leave User.current as-is (anonymous by default).
+      User.current = user || User.current
       session_start = Process.clock_gettime(Process::CLOCK_MONOTONIC)
       reset_turn_state
       reset_metrics
@@ -284,7 +291,7 @@ module RedmineTxMcp
 
     # Streaming version: yields events during the agentic loop
     def chat_stream(user_message, user: nil)
-      User.current = user || User.find(1)
+      User.current = user || User.current
       session_start = Process.clock_gettime(Process::CLOCK_MONOTONIC)
       reset_turn_state
       reset_metrics
@@ -487,7 +494,7 @@ module RedmineTxMcp
     def build_request_body(messages:, force_all_tools: false, tool_choice: nil, include_internal_tools: true, include_tools: true)
       body = {
         model: @model,
-        max_tokens: 4000,
+        max_tokens: configured_max_tokens,
         system: build_system_message,
         messages: messages
       }
@@ -596,7 +603,7 @@ module RedmineTxMcp
       request['Content-Type'] = 'application/json'
       request['x-api-key'] = anthropic_api_key
       request['anthropic-version'] = '2023-06-01'
-      request.body = JSON.generate(request_body)
+      request.body = JSON.generate(apply_anthropic_prompt_caching(request_body))
 
       # API request debug logging omitted (verbose)
 
@@ -623,6 +630,32 @@ module RedmineTxMcp
         provider: 'anthropic',
         retryable: true
       )
+    end
+
+    # Anthropic prompt caching: the system prompt (~250 lines) and tool schemas are
+    # large and static across a turn. Marking them with cache_control lets the API
+    # reuse them on every follow-up call in the agentic loop, cutting input-token
+    # cost and latency. Anthropic-only — the OpenAI path keeps the plain string.
+    def apply_anthropic_prompt_caching(request_body)
+      return request_body unless feature_enabled?('prompt_caching')
+
+      # Shallow copy so the (potentially large) messages array is shared, not deep-copied.
+      body = request_body.dup
+
+      system_text = body[:system] || body['system']
+      if system_text.is_a?(String) && !system_text.empty?
+        body.delete('system')
+        body[:system] = [{ type: 'text', text: system_text, cache_control: { type: 'ephemeral' } }]
+      end
+
+      tools = body[:tools] || body['tools']
+      if tools.is_a?(Array) && tools.any?
+        cached_tools = tools.dup
+        cached_tools[-1] = cached_tools[-1].merge(cache_control: { type: 'ephemeral' })
+        body[tools.equal?(body[:tools]) ? :tools : 'tools'] = cached_tools
+      end
+
+      body
     end
 
     def call_openai_api(request_body, &on_chunk)
@@ -2214,6 +2247,11 @@ module RedmineTxMcp
     def configured_max_run_seconds
       configured = (chatbot_settings['max_run_seconds'].to_i rescue 0)
       configured.positive? ? configured : DEFAULT_MAX_RUN_SECONDS
+    end
+
+    def configured_max_tokens
+      configured = (chatbot_settings['chatbot_max_tokens'].to_i rescue 0)
+      configured.positive? ? configured : DEFAULT_MAX_TOKENS
     end
 
     def configured_max_tool_calls
