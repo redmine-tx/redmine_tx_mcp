@@ -120,7 +120,7 @@ module RedmineTxMcp
     end
 
     def chat(user_message, user: nil)
-      User.current = user || User.find(1)
+      User.current = user || User.current
       final_message = nil
 
       run_worker(user_message, user: User.current) do |event|
@@ -144,7 +144,7 @@ module RedmineTxMcp
     end
 
     def chat_stream(user_message, user: nil)
-      User.current = user || User.find(1)
+      User.current = user || User.current
       run_worker(user_message, user: User.current) do |event|
         yield(event)
       end
@@ -188,6 +188,10 @@ module RedmineTxMcp
     private
 
     def run_worker(user_message, user:)
+      # Captured before the worker runs: a resumed session means earlier turns
+      # already grounded the conversation, so a short follow-up that adds no new
+      # data request should not be force-rejected for lacking fresh tool evidence.
+      resumed_session = @agent_sdk_session_id.present?
       token = register_agent_token(user)
       payload = worker_payload(user_message, token, user)
       final_message = nil
@@ -222,6 +226,7 @@ module RedmineTxMcp
       enforce_mutation_answer_guard!(user_message, final_message, successful_tool_results)
       if final_message.present? &&
          requires_redmine_tool_result?(user_message) &&
+         !grounded_follow_up?(user_message, resumed_session) &&
          !relevant_successful_tool_result?(user_message, successful_tool_results)
         raise(
           "질문과 관련된 Redmine MCP 조회 결과 없이 생성된 답변이라 중단했습니다. " \
@@ -364,7 +369,17 @@ module RedmineTxMcp
         미완료 열린 닫힌 배정 미배정
       ]
 
-      data_keywords.any? { |keyword| text.include?(keyword) } || text.match?(/#?\d{2,}/)
+      # Only treat a number as a data signal when it looks like an issue reference
+      # (#123, "이슈 123", "123번"). A bare number such as "최근 30일" or "12시" must
+      # not, by itself, force a Redmine tool requirement.
+      data_keywords.any? { |keyword| text.include?(keyword) } || requested_issue_count(text).positive?
+    end
+
+    # A short follow-up ("계속 확인해줘", "그 이슈 더 설명해줘") on an already-resumed
+    # session is grounded by the prior turns, so it is exempt from the fresh-evidence
+    # requirement. The mutation completion guard still applies independently.
+    def grounded_follow_up?(user_message, resumed_session)
+      resumed_session && RedmineTxMcp::ChatbotMutationWorkflow.follow_up_reference?(user_message)
     end
 
     def record_agent_tool_result(event)
@@ -465,7 +480,9 @@ module RedmineTxMcp
       end
 
       if parent_issue_progress_scope?(text)
-        required.merge(%w[issue_children_summary issue_schedule_tree])
+        # issue_get(include_children) is a valid alternative to the dedicated
+        # summary/schedule tools for parent progress, so accept it as evidence too.
+        required.merge(%w[issue_children_summary issue_schedule_tree issue_get])
       elsif required.empty? && requires_redmine_tool_result?(text)
         required.merge(EVIDENCE_TOOLS[:issue_search])
         required.merge(EVIDENCE_TOOLS[:bug_analysis]) if text.include?('현황') || text.include?('status')

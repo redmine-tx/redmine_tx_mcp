@@ -790,9 +790,24 @@ module RedmineTxMcp
     end
 
     def compare_issue_changes(issue, requested_changes)
-      compare_changes(issue, requested_changes) do |field|
+      changes = requested_changes
+      # When Redmine computes done_ratio from the issue status, an explicit done_ratio
+      # input is ignored server-side. Comparing it against the read-back would flag a
+      # false mismatch and wrongly fail verification of an otherwise-correct write.
+      if done_ratio_derived_from_status? && changes.key?('done_ratio')
+        changes = changes.reject { |field, _| field.to_s == 'done_ratio' }
+      end
+
+      compare_changes(issue, changes) do |field|
         ISSUE_FIELD_READERS[field.to_s]
       end
+    end
+
+    def done_ratio_derived_from_status?
+      defined?(Setting) && Setting.respond_to?(:issue_done_ratio) &&
+        Setting.issue_done_ratio.to_s == 'issue_status'
+    rescue StandardError
+      false
     end
 
     def compare_generic_changes(entity, requested_changes)
